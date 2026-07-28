@@ -10,18 +10,23 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# CPU를 과점유하지 않도록 스레드 수를 낮게 고정 (사용자 요청: 느려도 되니 컴퓨터를 계속 쓸 수 있게)
-os.environ.setdefault("OMP_NUM_THREADS", "2")
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
-os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "2")
+# 개인 노트북에서 다른 작업과 같이 돌릴 때만 CPU를 낮게 제한한다.
+# THROTTLE_CPU=1 환경변수를 줘야 활성화됨 — 전용 GPU 서버(예: A100)에서는 기본값(끔)으로
+# 모든 코어를 다 써서 데이터 로딩이 GPU를 굶기지 않게 한다.
+THROTTLE_CPU = os.environ.get("THROTTLE_CPU") == "1"
+if THROTTLE_CPU:
+    os.environ.setdefault("OMP_NUM_THREADS", "2")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
+    os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "2")
 
 import cv2
 import torch
 from torch.utils.data import DataLoader
 from sklearn.metrics import accuracy_score, f1_score
 
-cv2.setNumThreads(2)
-torch.set_num_threads(2)
+if THROTTLE_CPU:
+    cv2.setNumThreads(2)
+    torch.set_num_threads(2)
 
 from src.config import load_config
 from src.model import TrimodalEmotionModel

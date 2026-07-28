@@ -27,6 +27,7 @@ train:
   weight_decay: 0.01
   modality_dropout_prob: 0.15   # 설계 v3 9절: 학습 시 모달리티 드롭아웃
   num_workers: 0   # 노트북=0(안전). 전용 GPU 서버에서는 CPU 코어 수에 맞춰 올릴 것(예: 8) — 안 그러면 GPU가 오디오/영상 전처리를 기다리며 놀게 됨
+  feature_cache_dir: "data/feature_cache"   # 멜스펙트로그램/운율/얼굴프레임 계산 결과 캐시 — 첫 에폭 이후 훨씬 빨라짐
   train_manifest: "data/manifests/train.csv"
   val_manifest: "data/manifests/val.csv"
   test_manifest: "data/manifests/test.csv"

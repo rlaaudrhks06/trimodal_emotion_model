@@ -4,6 +4,7 @@ __pycache__/
 data/raw/
 data/processed_full/
 data/processed/
+data/feature_cache/
 data/manifests/*.csv
 checkpoints/
 *.log

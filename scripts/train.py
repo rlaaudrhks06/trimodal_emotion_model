@@ -88,9 +88,10 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
     print(f"[train] device = {device}")
 
+    cache_dir = train_cfg.get("feature_cache_dir")
     collate_fn = make_collate_fn(cfg.text_pretrained)
-    train_ds = ManifestEmotionDataset(train_cfg["train_manifest"], cfg)
-    val_ds = ManifestEmotionDataset(train_cfg["val_manifest"], cfg)
+    train_ds = ManifestEmotionDataset(train_cfg["train_manifest"], cfg, cache_dir=cache_dir)
+    val_ds = ManifestEmotionDataset(train_cfg["val_manifest"], cfg, cache_dir=cache_dir)
 
     # num_workers>0이면 오디오/영상 전처리(느린 CPU 작업)를 여러 프로세스가 병렬로 미리
     # 준비해두므로 GPU가 놀지 않는다 — 노트북에서는 0(안전), 전용 서버에서는 CPU 코어 수만큼 올릴 것.

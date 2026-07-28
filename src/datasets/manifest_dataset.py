@@ -60,7 +60,18 @@ def load_face_frames(frames_dir: str, face_size: int, max_frames: int = 32) -> n
 
 
 class ManifestEmotionDataset(Dataset):
-    def __init__(self, manifest_csv: str, cfg: Config, max_audio_seconds: float = 8.0, max_video_frames: int = 32):
+    """melspectrogram/운율/얼굴 프레임은 wav·이미지 파일 내용이 바뀌지 않는 한 항상
+    같은 값이 나오는 순수 계산이다. 그런데도 매 에폭·매 실행마다 원본에서 다시
+    계산하고 있었던 게 실측 결과 가장 큰 병목이었다(운율 추출의 librosa.pyin이
+    특히 느림). cache_dir을 주면 발화(utt_id)별로 한 번 계산한 결과를 .npz로
+    저장해두고, 다음 접근부터는 그걸 그대로 불러온다 — 값 자체는 100% 동일하고
+    속도만 빨라진다(캐싱이 학습 결과에 영향을 주지 않음).
+    """
+
+    def __init__(
+        self, manifest_csv: str, cfg: Config, max_audio_seconds: float = 8.0,
+        max_video_frames: int = 32, cache_dir: str | Path | None = None,
+    ):
         import pandas as pd
 
         self.df = pd.read_csv(manifest_csv)
@@ -71,13 +82,12 @@ class ManifestEmotionDataset(Dataset):
         self.cfg = cfg
         self.max_audio_seconds = max_audio_seconds
         self.max_video_frames = max_video_frames
+        self.cache_dir = Path(cache_dir) if cache_dir else None
 
     def __len__(self) -> int:
         return len(self.df)
 
-    def __getitem__(self, idx: int) -> dict:
-        row = self.df.iloc[idx]
-
+    def _compute_features(self, row) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         y, sr = librosa.load(
             row.wav_path, sr=self.cfg.audio_sample_rate, mono=True,
             duration=self.max_audio_seconds,
@@ -87,15 +97,35 @@ class ManifestEmotionDataset(Dataset):
             n_fft=self.cfg.audio_n_fft, hop_length=self.cfg.audio_hop_length,
         )  # [T_a, n_mels]
         prosody = extract_prosody(y, sr)  # [prosody_dim]
-
         frames = load_face_frames(
             row.face_frames_dir, face_size=self.cfg.visual_face_size, max_frames=self.max_video_frames
         )  # [T_v, 3, H, W]
+        return mel, prosody, frames
+
+    def __getitem__(self, idx: int) -> dict:
+        row = self.df.iloc[idx]
+        utt_id = str(row.utt_id)
+
+        cache_path = self.cache_dir / f"{utt_id}.npz" if self.cache_dir else None
+        if cache_path is not None and cache_path.exists():
+            cached = np.load(cache_path)
+            mel, prosody, frames = cached["mel"], cached["prosody"], cached["frames"]
+        else:
+            mel, prosody, frames = self._compute_features(row)
+            if cache_path is not None:
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
+                # 중간에 프로세스가 죽어도 캐시 파일이 반쯤 쓰인 채로 남지 않도록
+                # 임시 파일에 먼저 쓰고 마지막에 원자적으로 이름을 바꾼다.
+                # np.savez는 파일명이 .npz로 안 끝나면 자기가 .npz를 덧붙여버리므로,
+                # 임시 파일명도 반드시 .npz로 끝나야 한다(안 그러면 rename 대상이 없어서 에러남).
+                tmp_path = cache_path.with_name(cache_path.stem + ".tmp.npz")
+                np.savez(str(tmp_path), mel=mel, prosody=prosody, frames=frames)
+                tmp_path.replace(cache_path)
 
         label_idx = LABEL_TO_IDX[str(row.label).strip().lower()]
 
         return {
-            "utt_id": row.utt_id,
+            "utt_id": utt_id,
             "mel": mel,
             "prosody": prosody,
             "frames": frames,

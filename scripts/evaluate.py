@@ -37,8 +37,9 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
 
     num_workers = cfg.raw["train"].get("num_workers", 0)
+    cache_dir = cfg.raw["train"].get("feature_cache_dir")
     collate_fn = make_collate_fn(cfg.text_pretrained)
-    test_ds = ManifestEmotionDataset(args.manifest, cfg)
+    test_ds = ManifestEmotionDataset(args.manifest, cfg, cache_dir=cache_dir)
     test_loader = DataLoader(
         test_ds, batch_size=16, shuffle=False, collate_fn=collate_fn,
         num_workers=num_workers, pin_memory=(device.type == "cuda"),

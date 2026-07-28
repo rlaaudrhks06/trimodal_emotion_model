@@ -31,6 +31,7 @@ if THROTTLE_CPU:
 from src.config import load_config
 from src.model import TrimodalEmotionModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
+from src.datasets.labels import EMOTION_LABELS, LABEL_TO_IDX
 
 
 def move_batch_to_device(batch: dict, device: torch.device) -> dict:
@@ -40,11 +41,31 @@ def move_batch_to_device(batch: dict, device: torch.device) -> dict:
     }
 
 
-def run_epoch(model, loader, device, optimizer=None) -> dict:
+def compute_class_weights(train_ds: ManifestEmotionDataset, device: torch.device) -> torch.Tensor:
+    """클래스 불균형 대응: 데이터가 적은 클래스일수록 틀렸을 때 벌점을 크게 준다.
+
+    실측 결과(테스트셋 confusion matrix) 모델이 데이터가 많은 클래스(혐오·행복·놀람) 쪽으로
+    쏠려서 찍고, 적은 클래스(경멸)는 아예 한 번도 예측하지 않는 문제가 확인되어 도입함.
+    weight = 1/count, 평균이 1이 되도록 정규화(전체 loss 스케일이 크게 안 변하게).
+    """
+    counts = train_ds.df["label"].astype(str).str.strip().str.lower().value_counts()
+    weights = torch.zeros(len(EMOTION_LABELS))
+    for label, idx in LABEL_TO_IDX.items():
+        c = counts.get(label, 0)
+        weights[idx] = 1.0 / c if c > 0 else 0.0
+    weights = weights * (len(EMOTION_LABELS) / weights.sum())
+
+    print("[train] 클래스 가중치 (적을수록 큰 값):")
+    for label, idx in LABEL_TO_IDX.items():
+        print(f"  {label:10s}: count={int(counts.get(label, 0)):4d}  weight={weights[idx]:.3f}")
+
+    return weights.to(device)
+
+
+def run_epoch(model, loader, device, loss_fn, optimizer=None) -> dict:
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
 
-    loss_fn = torch.nn.CrossEntropyLoss()
     total_loss, all_preds, all_labels = 0.0, [], []
 
     with torch.set_grad_enabled(is_train):
@@ -107,13 +128,17 @@ def main():
     model = TrimodalEmotionModel(cfg, modality_dropout_prob=train_cfg["modality_dropout_prob"]).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=train_cfg["lr"], weight_decay=train_cfg["weight_decay"])
 
+    class_weights = compute_class_weights(train_ds, device)
+    train_loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+    eval_loss_fn = torch.nn.CrossEntropyLoss()  # 검증/평가 손실은 가중치 없이 — 실제 분포 기준 지표를 보기 위함
+
     ckpt_dir = Path(train_cfg["checkpoint_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     best_val_acc = 0.0
 
     for epoch in range(1, train_cfg["epochs"] + 1):
-        train_metrics = run_epoch(model, train_loader, device, optimizer)
-        val_metrics = run_epoch(model, val_loader, device, optimizer=None)
+        train_metrics = run_epoch(model, train_loader, device, train_loss_fn, optimizer)
+        val_metrics = run_epoch(model, val_loader, device, eval_loss_fn, optimizer=None)
 
         print(
             f"[epoch {epoch:03d}] "

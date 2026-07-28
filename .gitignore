@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+data/raw/
+data/processed_full/
+data/processed/
+data/manifests/*.csv
+checkpoints/
+*.log
+.DS_Store

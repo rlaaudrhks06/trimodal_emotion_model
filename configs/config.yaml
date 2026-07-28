@@ -1,0 +1,44 @@
+# 설계 명세 v3 기준 하이퍼파라미터
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2        # 오디오/비주얼 프론트엔드 TransformerEncoder 층 수
+  cross_attn_dropout: 0.1
+  num_classes: 8            # angry, disgust, fear, happy, sad, surprise, contempt, neutral
+  prosody_dim: 10           # features/prosody.py 참고
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  sample_rate: 16000
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112            # ABAW 전처리 관례(112x112)와 동일
+
+train:
+  batch_size: 16
+  epochs: 30
+  lr: 0.0002
+  weight_decay: 0.01
+  modality_dropout_prob: 0.15   # 설계 v3 9절: 학습 시 모달리티 드롭아웃
+  num_workers: 0   # 노트북=0(안전). 전용 GPU 서버에서는 CPU 코어 수에 맞춰 올릴 것(예: 8) — 안 그러면 GPU가 오디오/영상 전처리를 기다리며 놀게 됨
+  train_manifest: "data/manifests/train.csv"
+  val_manifest: "data/manifests/val.csv"
+  test_manifest: "data/manifests/test.csv"
+  checkpoint_dir: "checkpoints"
+
+labels:
+  # 순서가 곧 클래스 인덱스 (0~7). src/datasets/labels.py EMOTION_LABELS와 반드시 일치시킬 것
+  - angry
+  - disgust
+  - fear
+  - happy
+  - sad
+  - surprise
+  - contempt
+  - neutral

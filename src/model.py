@@ -1,0 +1,103 @@
+"""설계 v3 전체 아키텍처를 하나로 조립한 TrimodalEmotionModel.
+
+End-to-End 흐름 (설계 문서 §4):
+① 입력 -> ② 전처리 -> ③ 백본(X_v,X_a,X_t) -> ④ 계층적 교차 어텐션(§5.1)
+-> 운율 게이트 결합(§5.2) -> ⑤ 하이브리드 결합 -> ⑥ 분류기(§5.3)
+"""
+import random
+
+import torch
+import torch.nn as nn
+
+from .config import Config
+from .models.audio_backbone import AudioBackbone
+from .models.visual_backbone import VisualBackbone
+from .models.text_backbone import TextBackbone
+from .fusion.hierarchical_fusion import HierarchicalCrossAttentionFusion, mean_pool
+from .fusion.gated_prosody import ProsodyGatedFusion
+from .fusion.classifier import HybridClassifier
+
+
+class TrimodalEmotionModel(nn.Module):
+    def __init__(self, cfg: Config, modality_dropout_prob: float = 0.0):
+        super().__init__()
+        m = cfg.model
+        self.d_model = m.d_model
+        self.modality_dropout_prob = modality_dropout_prob
+
+        self.audio_backbone = AudioBackbone(
+            n_mels=cfg.audio_n_mels, d_model=m.d_model, n_heads=m.n_heads,
+            ffn_dim=m.ffn_dim, n_layers=m.backbone_layers,
+        )
+        self.visual_backbone = VisualBackbone(
+            d_model=m.d_model, n_heads=m.n_heads, ffn_dim=m.ffn_dim, n_layers=m.backbone_layers,
+        )
+        self.text_backbone = TextBackbone(pretrained_model=cfg.text_pretrained, d_model=m.d_model)
+
+        self.fusion = HierarchicalCrossAttentionFusion(
+            d_model=m.d_model, n_heads=m.n_heads, ffn_dim=m.ffn_dim,
+            n_layers=1, dropout=m.cross_attn_dropout,
+        )
+
+        hybrid_dim = m.d_model * 2  # [z_cross_*, mean(X_*)] concat
+        self.prosody_gate = ProsodyGatedFusion(hybrid_dim=hybrid_dim, prosody_dim=m.prosody_dim)
+        self.classifier = HybridClassifier(hybrid_dim=hybrid_dim, num_classes=m.num_classes)
+
+    def _maybe_drop_modalities(self, mel_spec, frames, input_ids, attention_mask):
+        """설계 v3 §9 강건성: 학습 시 모달리티 드롭아웃.
+
+        배치의 각 샘플에 대해 확률적으로 한 모달리티를 통째로 마스킹한다
+        (원본 입력을 0으로 치환 — 오디오/시각은 전부 0, 텍스트는 attention_mask를
+        전부 0으로 만들어 사실상 빈 입력으로 취급).
+        """
+        if not self.training or self.modality_dropout_prob <= 0.0:
+            return mel_spec, frames, input_ids, attention_mask
+
+        b = mel_spec.size(0)
+        mel_spec, frames = mel_spec.clone(), frames.clone()
+        attention_mask = attention_mask.clone()
+        for i in range(b):
+            if random.random() < self.modality_dropout_prob:
+                choice = random.choice(["audio", "visual", "text"])
+                if choice == "audio":
+                    mel_spec[i].zero_()
+                elif choice == "visual":
+                    frames[i].zero_()
+                else:
+                    attention_mask[i].zero_()
+                    attention_mask[i, 0] = 1  # BERT류는 최소 1개 유효 토큰 필요
+        return mel_spec, frames, input_ids, attention_mask
+
+    def forward(
+        self,
+        mel_spec: torch.Tensor,       # [B, T_a, n_mels]
+        prosody_vec: torch.Tensor,    # [B, prosody_dim]  (p_a)
+        frames: torch.Tensor,         # [B, T_v, 3, H, W]
+        input_ids: torch.Tensor,      # [B, T_t]
+        attention_mask: torch.Tensor,  # [B, T_t]  (1=유효 토큰, 0=패딩)
+        audio_padding_mask: torch.Tensor | None = None,  # [B, T_a] True=패딩(배치 내 가변 길이 대비)
+        visual_padding_mask: torch.Tensor | None = None,  # [B, T_v] True=패딩
+    ) -> torch.Tensor:
+        mel_spec, frames, input_ids, attention_mask = self._maybe_drop_modalities(
+            mel_spec, frames, input_ids, attention_mask
+        )
+
+        x_a = self.audio_backbone(mel_spec, key_padding_mask=audio_padding_mask)      # [B, T_a, d_model]
+        x_v = self.visual_backbone(frames, key_padding_mask=visual_padding_mask)       # [B, T_v, d_model]
+        x_t = self.text_backbone(input_ids, attention_mask)                            # [B, T_t, d_model]
+
+        t_key_padding_mask = attention_mask == 0  # True=패딩(무시할 위치)
+
+        z_cross_v, z_cross_a, z_cross_t = self.fusion(
+            x_v, x_a, x_t,
+            v_mask=visual_padding_mask, a_mask=audio_padding_mask, t_mask=t_key_padding_mask,
+        )
+
+        # 하이브리드 결합: 교차 어텐션(미세 타이밍) + 단일 모달리티 평균(거시 분위기)
+        z_v_final = torch.cat([z_cross_v, mean_pool(x_v, visual_padding_mask)], dim=-1)
+        z_t_final = torch.cat([z_cross_t, mean_pool(x_t, t_key_padding_mask)], dim=-1)
+        z_audio_hybrid = torch.cat([z_cross_a, mean_pool(x_a, audio_padding_mask)], dim=-1)
+        z_audio_final = self.prosody_gate(z_audio_hybrid, prosody_vec)
+
+        logits = self.classifier(z_v_final, z_audio_final, z_t_final)
+        return logits

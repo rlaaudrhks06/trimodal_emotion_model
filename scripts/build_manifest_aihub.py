@@ -184,20 +184,40 @@ def discover_json_video_pairs(raw_dir: Path) -> list[tuple[Path, Path]]:
     return pairs
 
 
-def build_manifest(raw_dir: Path, out_csv: Path, frames_out: Path, limit_clips: int | None = None) -> None:
+def _already_done_clip_ids(out_csv: Path) -> set[str]:
+    """기존 out_csv에 이미 기록된 클립 id 집합. --resume 시 이 클립들은 다시 처리하지 않는다."""
+    if not out_csv.exists():
+        return set()
+    done = set()
+    with open(out_csv, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            done.add(row["utt_id"].split("_")[0])
+    return done
+
+
+def build_manifest(raw_dir: Path, out_csv: Path, frames_out: Path, limit_clips: int | None = None, resume: bool = False) -> None:
     n_rows = 0
     skipped = 0
 
     pairs = discover_json_video_pairs(raw_dir)
     print(f"[build_manifest_aihub] {len(pairs)}개 (json, video) 쌍 발견")
+
+    already_done = _already_done_clip_ids(out_csv) if resume else set()
+    if already_done:
+        before = len(pairs)
+        pairs = [(j, v) for j, v in pairs if j.stem.replace("clip_", "") not in already_done]
+        print(f"[build_manifest_aihub] --resume: 이미 처리된 {before - len(pairs)}개 클립 건너뜀 (남은 {len(pairs)}개)")
+
     if limit_clips is not None:
         pairs = pairs[:limit_clips]
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not (resume and out_csv.exists())
     # 클립 단위로 곧바로 파일에 쓰고 flush — 장시간 작업 중 중간에 실패해도 그때까지의 결과는 남긴다.
-    f = open(out_csv, "w", newline="", encoding="utf-8")
+    f = open(out_csv, "a" if resume and out_csv.exists() else "w", newline="", encoding="utf-8")
     writer = csv.writer(f)
-    writer.writerow(["utt_id", "label", "wav_path", "text", "face_frames_dir"])
+    if write_header:
+        writer.writerow(["utt_id", "label", "wav_path", "text", "face_frames_dir"])
 
     for clip_idx, (json_path, video_path) in enumerate(pairs, 1):
         try:
@@ -251,5 +271,6 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--frames-out", type=Path, required=True)
     parser.add_argument("--limit-clips", type=int, default=None, help="테스트용: 앞의 N개 클립만 처리")
+    parser.add_argument("--resume", action="store_true", help="기존 --out 파일에 이미 있는 클립은 건너뛰고 이어서 처리")
     args = parser.parse_args()
-    build_manifest(args.raw_dir, args.out, args.frames_out, limit_clips=args.limit_clips)
+    build_manifest(args.raw_dir, args.out, args.frames_out, limit_clips=args.limit_clips, resume=args.resume)

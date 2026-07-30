@@ -33,6 +33,7 @@ import csv
 import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -184,6 +185,51 @@ def discover_json_video_pairs(raw_dir: Path) -> list[tuple[Path, Path]]:
     return pairs
 
 
+def _process_one_clip(json_path: Path, video_path: Path, frames_out: Path) -> tuple[str, list, int, str | None]:
+    """워커 프로세스에서 클립 하나를 통째로 처리한다.
+
+    실측 결과(12시간에 2152/5200) 클립을 하나씩 순차 처리하는 게 병목이었다 —
+    16코어 서버인데 1코어만 쓰고 있었음. CSV 파일 쓰기만 메인 프로세스가 전담하고,
+    (느린) 오디오/영상 추출은 여러 프로세스가 클립 단위로 나눠서 병렬 수행한다.
+    반환: (클립이름, 매니페스트 행 목록, 실패한 발화 수, 에러 메시지(있으면))
+    """
+    try:
+        utterances = load_json_utterances(json_path)
+        clip_id = utterances[0]["clip_id"] if utterances else json_path.stem.replace("clip_", "")
+        cap = cv2.VideoCapture(str(video_path))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        cap.release()
+    except Exception as e:
+        return json_path.stem, [], 0, f"클립 로드 실패: {e}"
+
+    rows, skipped = [], 0
+    for u in utterances:
+        try:
+            label = RAW_LABEL_ALIASES.get(u["emotion_raw"], u["emotion_raw"])
+            utt_id = f"{clip_id}_{u['person_id']}_{u['script_start']}_{u['script_end']}"
+            wav_path = frames_out / "audio" / f"{utt_id}.wav"
+            face_dir = frames_out / "faces" / utt_id
+
+            ok_audio = extract_audio_segment(video_path, u["script_start"], u["script_end"], fps, wav_path)
+            n_frames = extract_face_frames(
+                video_path, u["script_start"], u["script_end"],
+                (u["xtl"], u["ytl"], u["xbr"], u["ybr"]), face_dir,
+            )
+        except Exception:
+            skipped += 1
+            continue
+        finally:
+            time.sleep(SLEEP_BETWEEN_UTTERANCES_SEC)
+
+        if not ok_audio or n_frames == 0:
+            skipped += 1
+            continue
+
+        rows.append([utt_id, label, str(wav_path), u["script"], str(face_dir)])
+
+    return json_path.stem, rows, skipped, None
+
+
 def _already_done_clip_ids(out_csv: Path) -> set[str]:
     """기존 out_csv에 이미 기록된 클립 id 집합. --resume 시 이 클립들은 다시 처리하지 않는다."""
     if not out_csv.exists():
@@ -195,7 +241,10 @@ def _already_done_clip_ids(out_csv: Path) -> set[str]:
     return done
 
 
-def build_manifest(raw_dir: Path, out_csv: Path, frames_out: Path, limit_clips: int | None = None, resume: bool = False) -> None:
+def build_manifest(
+    raw_dir: Path, out_csv: Path, frames_out: Path, limit_clips: int | None = None,
+    resume: bool = False, num_workers: int | None = None,
+) -> None:
     n_rows = 0
     skipped = 0
 
@@ -219,47 +268,31 @@ def build_manifest(raw_dir: Path, out_csv: Path, frames_out: Path, limit_clips: 
     if write_header:
         writer.writerow(["utt_id", "label", "wav_path", "text", "face_frames_dir"])
 
-    for clip_idx, (json_path, video_path) in enumerate(pairs, 1):
-        try:
-            utterances = load_json_utterances(json_path)
-            clip_id = utterances[0]["clip_id"] if utterances else json_path.stem.replace("clip_", "")
+    num_workers = num_workers or max(1, (os.cpu_count() or 4) - 2)
+    print(f"[build_manifest_aihub] 프로세스 {num_workers}개로 병렬 처리 시작")
 
-            cap = cv2.VideoCapture(str(video_path))
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-            cap.release()
-        except Exception as e:
-            print(f"[build_manifest_aihub] 클립 로드 실패, 건너뜀: {json_path.stem} ({e})")
-            continue
-
-        print(f"[build_manifest_aihub] ({clip_idx}/{len(pairs)}) {json_path.stem}: 발화 {len(utterances)}건")
-
-        for u in utterances:
+    # 클립 하나하나는 서로 독립적이라(다른 클립 결과에 영향 안 줌) 워커 프로세스로 나눠 돌리고,
+    # CSV 쓰기만 메인 프로세스가 전담해서 파일 손상 없이 순서 상관없이 flush한다.
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        futures = {executor.submit(_process_one_clip, j, v, frames_out): j for j, v in pairs}
+        for done_count, future in enumerate(as_completed(futures), 1):
+            json_path = futures[future]
             try:
-                label = RAW_LABEL_ALIASES.get(u["emotion_raw"], u["emotion_raw"])
-                utt_id = f"{clip_id}_{u['person_id']}_{u['script_start']}_{u['script_end']}"
-
-                wav_path = frames_out / "audio" / f"{utt_id}.wav"
-                face_dir = frames_out / "faces" / utt_id
-
-                ok_audio = extract_audio_segment(video_path, u["script_start"], u["script_end"], fps, wav_path)
-                n_frames = extract_face_frames(
-                    video_path, u["script_start"], u["script_end"],
-                    (u["xtl"], u["ytl"], u["xbr"], u["ybr"]), face_dir,
-                )
+                clip_name, rows, clip_skipped, err = future.result()
             except Exception as e:
-                print(f"[build_manifest_aihub] 발화 처리 실패, 건너뜀: {json_path.stem} ({e})")
-                skipped += 1
-                continue
-            finally:
-                time.sleep(SLEEP_BETWEEN_UTTERANCES_SEC)
-
-            if not ok_audio or n_frames == 0:
-                skipped += 1
+                print(f"[build_manifest_aihub] ({done_count}/{len(pairs)}) {json_path.stem}: 예외 발생 ({e})")
                 continue
 
-            writer.writerow([utt_id, label, str(wav_path), u["script"], str(face_dir)])
-            n_rows += 1
-        f.flush()
+            if err:
+                print(f"[build_manifest_aihub] ({done_count}/{len(pairs)}) {clip_name}: {err}")
+                continue
+
+            for row in rows:
+                writer.writerow(row)
+                n_rows += 1
+            skipped += clip_skipped
+            f.flush()
+            print(f"[build_manifest_aihub] ({done_count}/{len(pairs)}) {clip_name}: 발화 {len(rows)}건")
 
     f.close()
     print(f"[build_manifest_aihub] {n_rows}개 발화 -> {out_csv} ({skipped}개는 오디오/프레임 추출 실패로 제외)")
@@ -272,5 +305,9 @@ if __name__ == "__main__":
     parser.add_argument("--frames-out", type=Path, required=True)
     parser.add_argument("--limit-clips", type=int, default=None, help="테스트용: 앞의 N개 클립만 처리")
     parser.add_argument("--resume", action="store_true", help="기존 --out 파일에 이미 있는 클립은 건너뛰고 이어서 처리")
+    parser.add_argument("--num-workers", type=int, default=None, help="병렬 프로세스 수 (기본: CPU 코어 수 - 2)")
     args = parser.parse_args()
-    build_manifest(args.raw_dir, args.out, args.frames_out, limit_clips=args.limit_clips, resume=args.resume)
+    build_manifest(
+        args.raw_dir, args.out, args.frames_out,
+        limit_clips=args.limit_clips, resume=args.resume, num_workers=args.num_workers,
+    )

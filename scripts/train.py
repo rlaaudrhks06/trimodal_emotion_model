@@ -44,15 +44,17 @@ def move_batch_to_device(batch: dict, device: torch.device) -> dict:
 def compute_class_weights(train_ds: ManifestEmotionDataset, device: torch.device) -> torch.Tensor:
     """클래스 불균형 대응: 데이터가 적은 클래스일수록 틀렸을 때 벌점을 크게 준다.
 
-    실측 결과(테스트셋 confusion matrix) 모델이 데이터가 많은 클래스(혐오·행복·놀람) 쪽으로
-    쏠려서 찍고, 적은 클래스(경멸)는 아예 한 번도 예측하지 않는 문제가 확인되어 도입함.
-    weight = 1/count, 평균이 1이 되도록 정규화(전체 loss 스케일이 크게 안 변하게).
+    1차 실험(400클립, 경멸 57개): 가중치 없음 → 다수 클래스로 완전히 쏠림.
+    2차 실험(1/count 가중치): 너무 세서 오히려 학습 불안정(train_acc가 22%까지밖에 못 오름).
+    지금은 80,122개로 데이터가 커지고 불균형 비율도 완화(16배→6.35배)되어서,
+    1/count보다 완만한 1/sqrt(count)로 재시도 — 극단적인 소수 클래스 과대보정을 피한다.
+    평균이 1이 되도록 정규화(전체 loss 스케일이 크게 안 변하게).
     """
     counts = train_ds.df["label"].astype(str).str.strip().str.lower().value_counts()
     weights = torch.zeros(len(EMOTION_LABELS))
     for label, idx in LABEL_TO_IDX.items():
         c = counts.get(label, 0)
-        weights[idx] = 1.0 / c if c > 0 else 0.0
+        weights[idx] = 1.0 / (c ** 0.5) if c > 0 else 0.0
     weights = weights * (len(EMOTION_LABELS) / weights.sum())
 
     print("[train] 클래스 가중치 (적을수록 큰 값):")
@@ -134,6 +136,13 @@ def main():
 
     ckpt_dir = Path(train_cfg["checkpoint_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # 최고 성능(best_model.pt)과 별개로, N에폭마다 스냅샷을 따로 저장해둔다 —
+    # 나중에 특정 에폭 시점으로 되돌아가 비교하고 싶을 때(예: 과적합 시작 지점 확인) 필요.
+    periodic_ckpt_dir = Path(train_cfg.get("periodic_checkpoint_dir", "checkpoints_periodic"))
+    periodic_ckpt_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_interval = train_cfg.get("checkpoint_interval", 20)
+
     best_val_acc = 0.0
 
     for epoch in range(1, train_cfg["epochs"] + 1):
@@ -150,6 +159,11 @@ def main():
             best_val_acc = val_metrics["accuracy"]
             torch.save(model.state_dict(), ckpt_dir / "best_model.pt")
             print(f"  -> 최고 성능 갱신, 체크포인트 저장 (val_acc={best_val_acc:.4f})")
+
+        if epoch % checkpoint_interval == 0:
+            snapshot_path = periodic_ckpt_dir / f"checkpoint_epoch{epoch}.pt"
+            torch.save(model.state_dict(), snapshot_path)
+            print(f"  -> {checkpoint_interval}에폭마다 스냅샷 저장: {snapshot_path}")
 
     print(f"[train] 완료. 최고 val_accuracy = {best_val_acc:.4f}")
 

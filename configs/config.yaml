@@ -22,16 +22,18 @@ visual:
 
 train:
   batch_size: 16
-  epochs: 30
+  epochs: 100   # 80,122개(14배 늘어난 데이터)로 재학습 — 300은 이 규모엔 과함 판단, 100으로 시작
   lr: 0.0002
   weight_decay: 0.01
   modality_dropout_prob: 0.15   # 설계 v3 9절: 학습 시 모달리티 드롭아웃
-  num_workers: 0   # 노트북=0(안전). 전용 GPU 서버에서는 CPU 코어 수에 맞춰 올릴 것(예: 8) — 안 그러면 GPU가 오디오/영상 전처리를 기다리며 놀게 됨
+  num_workers: 8   # 노트북=0(안전). 전용 GPU 서버에서는 CPU 코어 수에 맞춰 올릴 것(예: 8) — 안 그러면 GPU가 오디오/영상 전처리를 기다리며 놀게 됨
   feature_cache_dir: "data/feature_cache"   # 멜스펙트로그램/운율/얼굴프레임 계산 결과 캐시 — 첫 에폭 이후 훨씬 빨라짐
   train_manifest: "data/manifests/train.csv"
   val_manifest: "data/manifests/val.csv"
   test_manifest: "data/manifests/test.csv"
-  checkpoint_dir: "checkpoints"
+  checkpoint_dir: "checkpoints"                    # 최고 성능(best_model.pt) 전용
+  periodic_checkpoint_dir: "checkpoints_periodic"  # N에폭마다 스냅샷 저장 (checkpoint_epoch20.pt, ...)
+  checkpoint_interval: 20
 
 labels:
   # 순서가 곧 클래스 인덱스 (0~7). src/datasets/labels.py EMOTION_LABELS와 반드시 일치시킬 것

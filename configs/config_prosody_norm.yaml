@@ -1,0 +1,61 @@
+# config.yaml(과적합 대응 2차 학습)과 완전히 동일하되, prosody 정규화만 추가로 켠
+# A/B 비교용 설정. 데이터_전처리_EDA_점검_및_근거.md §1.2/§4-1,2 참고.
+#
+# 먼저 scripts/compute_prosody_stats.py로 data/prosody_stats_train.json을 만든
+# 뒤에 이 설정으로 학습해야 한다. checkpoint_dir/periodic_checkpoint_dir을 다르게
+# 줘서 지금 돌고 있는 baseline(config.yaml, checkpoints/)을 덮어쓰지 않는다.
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 8
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 8
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  sample_rate: 16000
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  batch_size: 128
+  epochs: 100
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+  train_manifest: "data/manifests/train.csv"
+  val_manifest: "data/manifests/val.csv"
+  test_manifest: "data/manifests/test.csv"
+  # --- 이 파일에서만 다른 부분 ---
+  prosody_stats_path: "data/prosody_stats_train.json"   # 신규: prosody z-score 정규화 켬(train-only fit)
+  checkpoint_dir: "checkpoints_prosody_norm"                   # baseline과 겹치지 않게 분리
+  periodic_checkpoint_dir: "checkpoints_periodic_prosody_norm"
+  checkpoint_interval: 20
+
+labels:
+  - angry
+  - disgust
+  - fear
+  - happy
+  - sad
+  - surprise
+  - contempt
+  - neutral

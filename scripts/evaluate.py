@@ -38,8 +38,9 @@ def main():
 
     num_workers = cfg.raw["train"].get("num_workers", 0)
     cache_dir = cfg.raw["train"].get("feature_cache_dir")
+    prosody_stats_path = cfg.raw["train"].get("prosody_stats_path")
     collate_fn = make_collate_fn(cfg.text_pretrained)
-    test_ds = ManifestEmotionDataset(args.manifest, cfg, cache_dir=cache_dir)
+    test_ds = ManifestEmotionDataset(args.manifest, cfg, cache_dir=cache_dir, prosody_stats_path=prosody_stats_path)
     test_loader = DataLoader(
         test_ds, batch_size=16, shuffle=False, collate_fn=collate_fn,
         num_workers=num_workers, pin_memory=(device.type == "cuda"),

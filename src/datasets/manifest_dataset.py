@@ -71,6 +71,7 @@ class ManifestEmotionDataset(Dataset):
     def __init__(
         self, manifest_csv: str, cfg: Config, max_audio_seconds: float = 8.0,
         max_video_frames: int = 32, cache_dir: str | Path | None = None,
+        prosody_stats_path: str | Path | None = None,
     ):
         import pandas as pd
 
@@ -83,6 +84,22 @@ class ManifestEmotionDataset(Dataset):
         self.max_audio_seconds = max_audio_seconds
         self.max_video_frames = max_video_frames
         self.cache_dir = Path(cache_dir) if cache_dir else None
+
+        # 데이터 전처리 EDA 점검 문서(§1.2)의 최우선 항목: prosody 10차원은 스케일이
+        # 서로 완전히 다른데(f0_mean 수백 vs jitter 0.01대) 지금까지 정규화가 전혀
+        # 없었다. prosody_stats_path가 주어지면(= scripts/compute_prosody_stats.py로
+        # train 세트에서만 fit한 통계) IQR 클리핑 + z-score 정규화를 적용한다.
+        # None이면(기본값) 기존과 완전히 동일하게 동작 — 진행 중인 baseline 학습과의
+        # A/B 비교를 위해 하위호환을 유지한다.
+        self.prosody_mean = self.prosody_std = self.prosody_clip_lo = self.prosody_clip_hi = None
+        if prosody_stats_path is not None:
+            import json
+            with open(prosody_stats_path, encoding="utf-8") as f:
+                stats = json.load(f)
+            self.prosody_mean = np.array(stats["mean"], dtype=np.float32)
+            self.prosody_std = np.array(stats["std"], dtype=np.float32)
+            self.prosody_clip_lo = np.array(stats["clip_lower"], dtype=np.float32)
+            self.prosody_clip_hi = np.array(stats["clip_upper"], dtype=np.float32)
 
     def __len__(self) -> int:
         return len(self.df)
@@ -121,6 +138,12 @@ class ManifestEmotionDataset(Dataset):
                 tmp_path = cache_path.with_name(cache_path.stem + ".tmp.npz")
                 np.savez(str(tmp_path), mel=mel, prosody=prosody, frames=frames)
                 tmp_path.replace(cache_path)
+
+        if self.prosody_mean is not None:
+            # 캐시에는 항상 원본(raw) prosody를 저장하고, 정규화는 읽을 때마다 적용한다
+            # -> stats를 나중에 바꿔도 캐시를 무효화할 필요가 없다.
+            prosody = np.clip(prosody, self.prosody_clip_lo, self.prosody_clip_hi)
+            prosody = (prosody - self.prosody_mean) / self.prosody_std
 
         label_idx = LABEL_TO_IDX[str(row.label).strip().lower()]
 

@@ -21,7 +21,7 @@ visual:
   face_size: 112            # ABAW 전처리 관례(112x112)와 동일
 
 train:
-  batch_size: 16
+  batch_size: 128   # A100 80GB인데 16일 땐 GPU 메모리 6.4GB(8%)만 씀 -> 훨씬 키워서 GPU 활용도 올림
   epochs: 100   # 80,122개(14배 늘어난 데이터)로 재학습 — 300은 이 규모엔 과함 판단, 100으로 시작
   lr: 0.0002
   weight_decay: 0.01

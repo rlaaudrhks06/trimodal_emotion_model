@@ -6,6 +6,7 @@
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -64,14 +65,21 @@ def compute_class_weights(train_ds: ManifestEmotionDataset, device: torch.device
     return weights.to(device)
 
 
-def run_epoch(model, loader, device, loss_fn, optimizer=None) -> dict:
+def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "") -> dict:
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
 
     total_loss, all_preds, all_labels = 0.0, [], []
 
+    # 배치 몇 %까지 왔는지 실시간으로 보여준다 — 몇 시간짜리 에폭을 ps/nvidia-smi로만
+    # 간접 확인해야 했던 문제 때문에 추가함. nohup으로 리다이렉트해도 바로 보이도록
+    # flush=True로 강제 출력.
+    n_batches = len(loader)
+    log_every = max(1, n_batches // 20)  # 대략 5%마다 한 번씩
+    start_time = time.time()
+
     with torch.set_grad_enabled(is_train):
-        for batch in loader:
+        for batch_idx, batch in enumerate(loader, 1):
             batch = move_batch_to_device(batch, device)
             logits = model(
                 mel_spec=batch["mel_spec"],
@@ -92,6 +100,16 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None) -> dict:
             total_loss += loss.item() * logits.size(0)
             all_preds.extend(logits.argmax(dim=-1).cpu().tolist())
             all_labels.extend(batch["labels"].cpu().tolist())
+
+            if batch_idx % log_every == 0 or batch_idx == n_batches:
+                pct = 100.0 * batch_idx / n_batches
+                elapsed_min = (time.time() - start_time) / 60
+                running_loss = total_loss / len(all_labels)
+                print(
+                    f"    [{log_label}] {pct:5.1f}% ({batch_idx}/{n_batches} 배치) "
+                    f"누적loss={running_loss:.4f} 경과={elapsed_min:.1f}분",
+                    flush=True,
+                )
 
     return {
         "loss": total_loss / len(all_labels),
@@ -146,26 +164,27 @@ def main():
     best_val_acc = 0.0
 
     for epoch in range(1, train_cfg["epochs"] + 1):
-        train_metrics = run_epoch(model, train_loader, device, train_loss_fn, optimizer)
-        val_metrics = run_epoch(model, val_loader, device, eval_loss_fn, optimizer=None)
+        train_metrics = run_epoch(model, train_loader, device, train_loss_fn, optimizer, log_label=f"epoch {epoch:03d} train")
+        val_metrics = run_epoch(model, val_loader, device, eval_loss_fn, optimizer=None, log_label=f"epoch {epoch:03d} val")
 
         print(
             f"[epoch {epoch:03d}] "
             f"train_loss={train_metrics['loss']:.4f} train_acc={train_metrics['accuracy']:.4f} | "
-            f"val_loss={val_metrics['loss']:.4f} val_acc={val_metrics['accuracy']:.4f} val_f1={val_metrics['weighted_f1']:.4f}"
+            f"val_loss={val_metrics['loss']:.4f} val_acc={val_metrics['accuracy']:.4f} val_f1={val_metrics['weighted_f1']:.4f}",
+            flush=True,
         )
 
         if val_metrics["accuracy"] > best_val_acc:
             best_val_acc = val_metrics["accuracy"]
             torch.save(model.state_dict(), ckpt_dir / "best_model.pt")
-            print(f"  -> 최고 성능 갱신, 체크포인트 저장 (val_acc={best_val_acc:.4f})")
+            print(f"  -> 최고 성능 갱신, 체크포인트 저장 (val_acc={best_val_acc:.4f})", flush=True)
 
         if epoch % checkpoint_interval == 0:
             snapshot_path = periodic_ckpt_dir / f"checkpoint_epoch{epoch}.pt"
             torch.save(model.state_dict(), snapshot_path)
-            print(f"  -> {checkpoint_interval}에폭마다 스냅샷 저장: {snapshot_path}")
+            print(f"  -> {checkpoint_interval}에폭마다 스냅샷 저장: {snapshot_path}", flush=True)
 
-    print(f"[train] 완료. 최고 val_accuracy = {best_val_acc:.4f}")
+    print(f"[train] 완료. 최고 val_accuracy = {best_val_acc:.4f}", flush=True)
 
 
 if __name__ == "__main__":

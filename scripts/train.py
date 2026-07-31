@@ -149,8 +149,22 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=train_cfg["lr"], weight_decay=train_cfg["weight_decay"])
 
     class_weights = compute_class_weights(train_ds, device)
-    train_loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
-    eval_loss_fn = torch.nn.CrossEntropyLoss()  # 검증/평가 손실은 가중치 없이 — 실제 분포 기준 지표를 보기 위함
+    # 과적합 대응: label smoothing — 정답 라벨에 100% 확신을 두지 않게 해서 학습 데이터의
+    # 잡음/애매한 라벨(감정은 원래 경계가 모호함)에 과하게 확신하는 것을 막는다.
+    # 검증 손실은 실제 분포 기준 지표를 그대로 보기 위해 smoothing/가중치 없이 계산.
+    label_smoothing = train_cfg.get("label_smoothing", 0.0)
+    train_loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+    eval_loss_fn = torch.nn.CrossEntropyLoss()
+
+    # 과적합 대응: val_loss가 개선되지 않으면 학습률을 낮춰서 이미 찾은 좋은 지점 근처에서
+    # 더 조심스럽게(과적합 덜 일으키며) 탐색하게 한다. 최근 학습에서 val_loss가 계속
+    # 올라가기만 하는 패턴이 관찰되어 추가.
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min",
+        factor=train_cfg.get("lr_scheduler_factor", 0.5),
+        patience=train_cfg.get("lr_scheduler_patience", 3),
+        min_lr=1e-6,
+    )
 
     ckpt_dir = Path(train_cfg["checkpoint_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -167,12 +181,19 @@ def main():
         train_metrics = run_epoch(model, train_loader, device, train_loss_fn, optimizer, log_label=f"epoch {epoch:03d} train")
         val_metrics = run_epoch(model, val_loader, device, eval_loss_fn, optimizer=None, log_label=f"epoch {epoch:03d} val")
 
+        prev_lr = optimizer.param_groups[0]["lr"]
+        scheduler.step(val_metrics["loss"])
+        cur_lr = optimizer.param_groups[0]["lr"]
+
         print(
             f"[epoch {epoch:03d}] "
             f"train_loss={train_metrics['loss']:.4f} train_acc={train_metrics['accuracy']:.4f} | "
-            f"val_loss={val_metrics['loss']:.4f} val_acc={val_metrics['accuracy']:.4f} val_f1={val_metrics['weighted_f1']:.4f}",
+            f"val_loss={val_metrics['loss']:.4f} val_acc={val_metrics['accuracy']:.4f} val_f1={val_metrics['weighted_f1']:.4f} "
+            f"lr={cur_lr:.2e}",
             flush=True,
         )
+        if cur_lr < prev_lr:
+            print(f"  -> val_loss 정체로 학습률 감소: {prev_lr:.2e} -> {cur_lr:.2e}", flush=True)
 
         if val_metrics["accuracy"] > best_val_acc:
             best_val_acc = val_metrics["accuracy"]

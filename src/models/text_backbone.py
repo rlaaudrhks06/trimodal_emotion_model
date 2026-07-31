@@ -7,18 +7,32 @@ d_model로 선형 투영한다.
 """
 import torch
 import torch.nn as nn
-from transformers import AutoModel
+from transformers import AutoConfig, AutoModel
 
 
 class TextBackbone(nn.Module):
-    def __init__(self, pretrained_model: str, d_model: int, freeze_base: bool = False):
+    def __init__(
+        self, pretrained_model: str, d_model: int,
+        dropout: float = 0.1, freeze_layers: int = 0,
+    ):
         super().__init__()
-        self.bert = AutoModel.from_pretrained(pretrained_model)
+        # 과적합 대응: BERT 자체 내부 dropout(기본 0.1)을 키울 수 있게 config로 노출
+        bert_cfg = AutoConfig.from_pretrained(pretrained_model)
+        bert_cfg.hidden_dropout_prob = dropout
+        bert_cfg.attention_probs_dropout_prob = dropout
+        self.bert = AutoModel.from_pretrained(pretrained_model, config=bert_cfg)
         hidden_size = self.bert.config.hidden_size
         self.proj = nn.Linear(hidden_size, d_model)
-        if freeze_base:
-            for p in self.bert.parameters():
+
+        # 과적합 대응: 1.1억 파라미터 BERT를 통째로 파인튜닝하면 커스텀 소형 모듈들보다
+        # 훨씬 큰 용량으로 학습 데이터를 암기하기 쉬움 -> 하위 N개 encoder layer(+embeddings)를
+        # 얼려서 일반적인 한국어 표현은 그대로 두고, 상위 layer만 태스크에 맞춰 미세조정한다.
+        if freeze_layers > 0:
+            for p in self.bert.embeddings.parameters():
                 p.requires_grad = False
+            for layer in self.bert.encoder.layer[:freeze_layers]:
+                for p in layer.parameters():
+                    p.requires_grad = False
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         # input_ids/attention_mask: [B, T_t]

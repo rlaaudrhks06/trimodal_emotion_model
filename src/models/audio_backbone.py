@@ -12,10 +12,10 @@ from .common import TemporalConvFrontend
 
 
 class AudioBackbone(nn.Module):
-    def __init__(self, n_mels: int, d_model: int, n_heads: int, ffn_dim: int, n_layers: int):
+    def __init__(self, n_mels: int, d_model: int, n_heads: int, ffn_dim: int, n_layers: int, dropout: float = 0.1):
         super().__init__()
         self.frontend = TemporalConvFrontend(
-            in_dim=n_mels, d_model=d_model, n_heads=n_heads, ffn_dim=ffn_dim, n_layers=n_layers
+            in_dim=n_mels, d_model=d_model, n_heads=n_heads, ffn_dim=ffn_dim, n_layers=n_layers, dropout=dropout
         )
 
     def forward(self, mel_spec: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:

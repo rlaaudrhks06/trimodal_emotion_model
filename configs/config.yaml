@@ -4,9 +4,15 @@ model:
   n_heads: 8
   ffn_dim: 1024
   backbone_layers: 2        # 오디오/비주얼 프론트엔드 TransformerEncoder 층 수
-  cross_attn_dropout: 0.1
   num_classes: 8            # angry, disgust, fear, happy, sad, surprise, contempt, neutral
   prosody_dim: 10           # features/prosody.py 참고
+  # --- 과적합 대응(2차 학습, 100에폭 중 12에폭 이후 val_acc 정체/val_loss 상승 관찰) ---
+  cross_attn_dropout: 0.2       # 0.1 -> 0.2
+  backbone_dropout: 0.2         # 오디오/비주얼 TemporalConvFrontend, 신규(기존 하드코딩 0.1)
+  visual_cnn_dropout: 0.15      # FrameCNN Dropout2d, 신규(기존 0 = 규제 없음)
+  classifier_dropout: 0.35      # 0.2 -> 0.35 (최종 MLP, 3개 모달리티 concat이라 용량 큼)
+  text_dropout: 0.2             # BERT 내부 hidden/attention dropout, 0.1 -> 0.2
+  text_freeze_layers: 8         # klue/bert-base 12층 중 하위 8층+embeddings 동결(상위 4층만 미세조정)
 
 text:
   pretrained_model: "klue/bert-base"
@@ -24,8 +30,12 @@ train:
   batch_size: 128   # A100 80GB인데 16일 땐 GPU 메모리 6.4GB(8%)만 씀 -> 훨씬 키워서 GPU 활용도 올림
   epochs: 100   # 80,122개(14배 늘어난 데이터)로 재학습 — 300은 이 규모엔 과함 판단, 100으로 시작
   lr: 0.0002
-  weight_decay: 0.01
-  modality_dropout_prob: 0.15   # 설계 v3 9절: 학습 시 모달리티 드롭아웃
+  # --- 과적합 대응(2차 학습) ---
+  weight_decay: 0.05        # 0.01 -> 0.05
+  modality_dropout_prob: 0.25   # 설계 v3 9절: 학습 시 모달리티 드롭아웃. 0.15 -> 0.25
+  label_smoothing: 0.1          # 신규: 정답 라벨 과확신 방지
+  lr_scheduler_patience: 3      # 신규: val_loss가 3에폭 연속 개선 안 되면 lr 감소
+  lr_scheduler_factor: 0.5      # 신규: 감소 비율(반으로)
   num_workers: 8   # 노트북=0(안전). 전용 GPU 서버에서는 CPU 코어 수에 맞춰 올릴 것(예: 8) — 안 그러면 GPU가 오디오/영상 전처리를 기다리며 놀게 됨
   feature_cache_dir: "data/feature_cache"   # 멜스펙트로그램/운율/얼굴프레임 계산 결과 캐시 — 첫 에폭 이후 훨씬 빨라짐
   train_manifest: "data/manifests/train.csv"

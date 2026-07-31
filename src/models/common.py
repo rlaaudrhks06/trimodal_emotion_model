@@ -41,6 +41,9 @@ class TemporalConvFrontend(nn.Module):
             nn.GELU(),
             nn.Conv1d(d_model, d_model, kernel_size=3, padding=1),
         )
+        # conv 출력 자체에는 규제가 전혀 없었음(TransformerEncoderLayer 내부 dropout만 존재) ->
+        # 과적합 대응으로 conv 뒤에도 dropout 추가
+        self.conv_dropout = nn.Dropout(dropout)
         self.pos_enc = PositionalEncoding(d_model)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -58,6 +61,7 @@ class TemporalConvFrontend(nn.Module):
     def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
         # x: [B, T, in_dim] -> Conv1d는 [B, in_dim, T] 형태를 요구
         h = self.temporal_conv(x.transpose(1, 2)).transpose(1, 2)  # [B, T, d_model]
+        h = self.conv_dropout(h)
         h = self.pos_enc(h)
         h = self.encoder(h, src_key_padding_mask=key_padding_mask)
         return h

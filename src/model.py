@@ -27,12 +27,16 @@ class TrimodalEmotionModel(nn.Module):
 
         self.audio_backbone = AudioBackbone(
             n_mels=cfg.audio_n_mels, d_model=m.d_model, n_heads=m.n_heads,
-            ffn_dim=m.ffn_dim, n_layers=m.backbone_layers,
+            ffn_dim=m.ffn_dim, n_layers=m.backbone_layers, dropout=m.backbone_dropout,
         )
         self.visual_backbone = VisualBackbone(
             d_model=m.d_model, n_heads=m.n_heads, ffn_dim=m.ffn_dim, n_layers=m.backbone_layers,
+            dropout=m.backbone_dropout, cnn_dropout=m.visual_cnn_dropout,
         )
-        self.text_backbone = TextBackbone(pretrained_model=cfg.text_pretrained, d_model=m.d_model)
+        self.text_backbone = TextBackbone(
+            pretrained_model=cfg.text_pretrained, d_model=m.d_model,
+            dropout=m.text_dropout, freeze_layers=m.text_freeze_layers,
+        )
 
         self.fusion = HierarchicalCrossAttentionFusion(
             d_model=m.d_model, n_heads=m.n_heads, ffn_dim=m.ffn_dim,
@@ -41,7 +45,7 @@ class TrimodalEmotionModel(nn.Module):
 
         hybrid_dim = m.d_model * 2  # [z_cross_*, mean(X_*)] concat
         self.prosody_gate = ProsodyGatedFusion(hybrid_dim=hybrid_dim, prosody_dim=m.prosody_dim)
-        self.classifier = HybridClassifier(hybrid_dim=hybrid_dim, num_classes=m.num_classes)
+        self.classifier = HybridClassifier(hybrid_dim=hybrid_dim, num_classes=m.num_classes, dropout=m.classifier_dropout)
 
     def _maybe_drop_modalities(self, mel_spec, frames, input_ids, attention_mask):
         """설계 v3 §9 강건성: 학습 시 모달리티 드롭아웃.

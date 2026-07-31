@@ -18,12 +18,17 @@ from .common import TemporalConvFrontend
 class FrameCNN(nn.Module):
     """단일 프레임 [3,H,W] -> 임베딩 [feat_dim] 소형 CNN."""
 
-    def __init__(self, feat_dim: int = 256):
+    def __init__(self, feat_dim: int = 256, dropout: float = 0.0):
         super().__init__()
+        # 사전학습 가중치 없이 처음부터 학습하는 CNN인데 규제가 전혀 없었음(BatchNorm뿐) ->
+        # 과적합 대응으로 conv 블록 사이에 Dropout2d(채널 단위 드롭) 추가
         self.conv = nn.Sequential(
             nn.Conv2d(3, 32, 3, stride=2, padding=1), nn.BatchNorm2d(32), nn.ReLU(),   # 112->56
+            nn.Dropout2d(dropout),
             nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.BatchNorm2d(64), nn.ReLU(),  # 56->28
+            nn.Dropout2d(dropout),
             nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.BatchNorm2d(128), nn.ReLU(),  # 28->14
+            nn.Dropout2d(dropout),
             nn.Conv2d(128, feat_dim, 3, stride=2, padding=1), nn.BatchNorm2d(feat_dim), nn.ReLU(),  # 14->7
         )
         self.pool = nn.AdaptiveAvgPool2d(1)
@@ -37,11 +42,14 @@ class FrameCNN(nn.Module):
 
 
 class VisualBackbone(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, ffn_dim: int, n_layers: int, frame_feat_dim: int = 256):
+    def __init__(
+        self, d_model: int, n_heads: int, ffn_dim: int, n_layers: int, frame_feat_dim: int = 256,
+        dropout: float = 0.1, cnn_dropout: float = 0.0,
+    ):
         super().__init__()
-        self.frame_cnn = FrameCNN(feat_dim=frame_feat_dim)
+        self.frame_cnn = FrameCNN(feat_dim=frame_feat_dim, dropout=cnn_dropout)
         self.frontend = TemporalConvFrontend(
-            in_dim=frame_feat_dim, d_model=d_model, n_heads=n_heads, ffn_dim=ffn_dim, n_layers=n_layers
+            in_dim=frame_feat_dim, d_model=d_model, n_heads=n_heads, ffn_dim=ffn_dim, n_layers=n_layers, dropout=dropout
         )
 
     def forward(self, frames: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:

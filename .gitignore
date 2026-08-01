@@ -9,5 +9,11 @@ data/manifests/*.csv
 checkpoints/
 checkpoints_periodic/
 checkpoints_v1_no_weight/
+checkpoints_prosody_norm/
+checkpoints_periodic_prosody_norm/
+*.pt
 *.log
+archived_runs/
 .DS_Store
+
+# results/ 는 예외 — CSV 요약처럼 의도적으로 공유하는 파일만 여기에 둔다

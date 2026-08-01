@@ -15,6 +15,7 @@ from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classifi
 
 from src.config import load_config
 from src.model import TrimodalEmotionModel
+from src.model_single_modality import SingleModalityModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
 from src.datasets.labels import EMOTION_LABELS
 
@@ -31,22 +32,32 @@ def main():
     parser.add_argument("--config", type=str, default=str(Path(__file__).resolve().parent.parent / "configs" / "config.yaml"))
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--manifest", type=str, required=True)
+    parser.add_argument(
+        "--modality", choices=["audio", "visual", "text"], default=None,
+        help="지정하면 SingleModalityModel(베이스라인 체크포인트)을 평가. 생략하면 트리모달 본 모델.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
+    train_cfg = cfg.raw["train"]
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
 
-    num_workers = cfg.raw["train"].get("num_workers", 0)
-    cache_dir = cfg.raw["train"].get("feature_cache_dir")
-    prosody_stats_path = cfg.raw["train"].get("prosody_stats_path")
+    num_workers = train_cfg.get("num_workers", 0)
+    cache_dir = train_cfg.get("feature_cache_dir")
+    prosody_stats_path = train_cfg.get("prosody_stats_path")
     collate_fn = make_collate_fn(cfg.text_pretrained)
     test_ds = ManifestEmotionDataset(args.manifest, cfg, cache_dir=cache_dir, prosody_stats_path=prosody_stats_path)
     test_loader = DataLoader(
-        test_ds, batch_size=16, shuffle=False, collate_fn=collate_fn,
+        # 학습 때와 같은 batch_size 사용 — 하드코딩된 16보다 훨씬 빠르고, 배치 크기가
+        # 결과(정확도/지표)에 영향을 주지 않으므로 값을 맞출 이유는 없지만 속도상 유리하다.
+        test_ds, batch_size=train_cfg["batch_size"], shuffle=False, collate_fn=collate_fn,
         num_workers=num_workers, pin_memory=(device.type == "cuda"),
     )
 
-    model = TrimodalEmotionModel(cfg).to(device)
+    if args.modality is not None:
+        model = SingleModalityModel(cfg, modality=args.modality).to(device)
+    else:
+        model = TrimodalEmotionModel(cfg).to(device)
     model.load_state_dict(torch.load(args.checkpoint, map_location=device))
     model.eval()
 

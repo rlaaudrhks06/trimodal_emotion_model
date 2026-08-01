@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 from src.config import load_config
 from src.model_single_modality import SingleModalityModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
-from scripts.train import move_batch_to_device, compute_class_weights, run_epoch  # noqa: F401 (move_batch_to_device는 run_epoch 내부에서 씀)
+from scripts.train import compute_class_weights, run_epoch
 
 
 def main():

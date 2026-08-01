@@ -8,7 +8,7 @@
     z_audio_hybrid = concat[z_cross_a, mean(X_a)]  -> ProsodyGatedFusion -> z_audio_final
 
     z = concat[z_v_final, z_audio_final, z_t_final]
-    p = Softmax( MLP(z) )  : [C=7]
+    p = Softmax( MLP(z) )  : [C]  (C=8, src/datasets/labels.py 참고)
 """
 import torch
 import torch.nn as nn

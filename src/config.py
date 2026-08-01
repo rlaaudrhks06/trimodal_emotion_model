@@ -13,7 +13,7 @@ class ModelConfig:
     ffn_dim: int = 1024
     backbone_layers: int = 2
     cross_attn_dropout: float = 0.1
-    num_classes: int = 7
+    num_classes: int = 8
     prosody_dim: int = 10
     # 과적합 대응(2차 학습에서 추가): 각 모듈별 규제 강도를 config.yaml에서 조절 가능하게 함
     backbone_dropout: float = 0.1       # 오디오/비주얼 TemporalConvFrontend

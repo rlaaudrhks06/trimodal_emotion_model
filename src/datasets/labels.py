@@ -11,7 +11,7 @@ KEMDy19/20은 7클래스(경멸 없음)라서 해당 데이터로는 "contempt" 
 
 주의: AI Hub 원본 JSON은 "혐오"를 영어로 "dislike"라고 표기한다. 학술 관례상
 "disgust"를 표준 표기로 쓰므로, 매니페스트 생성 시 dislike -> disgust로
-맞춰줘야 한다(scripts/build_manifest_template.py 참고).
+맞춰줘야 한다(scripts/build_manifest_aihub.py 참고).
 """
 
 EMOTION_LABELS = ["angry", "disgust", "fear", "happy", "sad", "surprise", "contempt", "neutral"]

@@ -6,6 +6,7 @@ data/processed_full/
 data/processed/
 data/feature_cache/
 data/manifests/*.csv
+data/*.json
 checkpoints/
 checkpoints_periodic/
 *.pt

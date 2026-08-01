@@ -65,7 +65,14 @@ SLEEP_BETWEEN_UTTERANCES_SEC = 0.3 if THROTTLE_CPU else 0.0  # 노트북에서�
 def load_json_utterances(json_path: Path) -> list[dict]:
     import json
 
-    d = json.load(open(json_path, encoding="utf-8"))
+    # 대부분 UTF-8이지만 일부 클립(특히 "-수정본" 접미사 없는 원본)은 CP949로 저장되어 있어
+    # UTF-8 디코딩이 바이트 단위로 실패한다. UTF-8 먼저 시도하고 실패하면 CP949로 재시도.
+    raw = json_path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("cp949")
+    d = json.loads(text)
     clip_id = d["clip_id"]
 
     seen = {}

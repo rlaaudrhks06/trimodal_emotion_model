@@ -18,15 +18,19 @@ from pathlib import Path
 
 import pandas as pd
 
+#  v1~v4(scripts/train.py)는 "[epoch 003] ..." 형식이고,
+#  단일 모달리티 베이스라인(scripts/train_single_modality.py)은
+#  "[text epoch 003] ..."처럼 모달리티 이름이 앞에 붙는다 — 둘 다 매칭하도록
+#  선택적 접두사 "(?:\w+ )?"를 넣는다.
 EPOCH_SUMMARY_RE = re.compile(
-    r"^\[epoch (\d+)\] "
+    r"^\[(?:\w+ )?epoch (\d+)\] "
     r"train_loss=([\d.]+) train_acc=([\d.]+) \| "
     r"val_loss=([\d.]+) val_acc=([\d.]+) val_f1=([\d.]+)"
     r"(?: lr=([\d.eE+-]+))?"
 )
 
 BATCH_PROGRESS_RE = re.compile(
-    r"\[epoch (\d+) (train|val)\]\s+([\d.]+)% \((\d+)/(\d+) 배치\) 누적loss=([\d.]+) 경과=([\d.]+)분"
+    r"\[(?:\w+ )?epoch (\d+) (train|val)\]\s+([\d.]+)% \((\d+)/(\d+) 배치\) 누적loss=([\d.]+) 경과=([\d.]+)분"
 )
 
 

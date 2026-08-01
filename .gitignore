@@ -8,9 +8,6 @@ data/feature_cache/
 data/manifests/*.csv
 checkpoints/
 checkpoints_periodic/
-checkpoints_v1_no_weight/
-checkpoints_prosody_norm/
-checkpoints_periodic_prosody_norm/
 *.pt
 *.log
 archived_runs/

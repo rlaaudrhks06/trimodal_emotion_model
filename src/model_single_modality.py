@@ -36,7 +36,7 @@ class SingleModalityModel(nn.Module):
         elif modality == "visual":
             self.backbone = VisualBackbone(
                 d_model=m.d_model, n_heads=m.n_heads, ffn_dim=m.ffn_dim, n_layers=m.backbone_layers,
-                dropout=m.backbone_dropout, cnn_dropout=m.visual_cnn_dropout,
+                dropout=m.backbone_dropout, cnn_dropout=m.visual_cnn_dropout, cnn_freeze_layers=m.visual_freeze_layers,
             )
             feat_dim = m.d_model
         else:  # text

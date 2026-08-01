@@ -9,10 +9,11 @@ model:
   # --- 과적합 대응(2차 학습, 100에폭 중 12에폭 이후 val_acc 정체/val_loss 상승 관찰) ---
   cross_attn_dropout: 0.2       # 0.1 -> 0.2
   backbone_dropout: 0.2         # 오디오/비주얼 TemporalConvFrontend, 신규(기존 하드코딩 0.1)
-  visual_cnn_dropout: 0.15      # FrameCNN Dropout2d, 신규(기존 0 = 규제 없음)
+  visual_cnn_dropout: 0.15      # FrameCNN(MobileNetV3) 풀링 후 dropout
   classifier_dropout: 0.35      # 0.2 -> 0.35 (최종 MLP, 3개 모달리티 concat이라 용량 큼)
   text_dropout: 0.2             # BERT 내부 hidden/attention dropout, 0.1 -> 0.2
   text_freeze_layers: 8         # klue/bert-base 12층 중 하위 8층+embeddings 동결(상위 4층만 미세조정)
+  visual_freeze_layers: 9       # 8.7절 대응: MobileNetV3-Small(13블록) 사전학습 백본으로 교체, 하위 9개 동결(상위 4개만 미세조정 — BERT와 같은 비율)
 
 text:
   pretrained_model: "klue/bert-base"

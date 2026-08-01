@@ -1,0 +1,59 @@
+# config_prosody_norm.yaml(v4 recipe)과 동일한 규제·prosody 정규화 설정에,
+# 8.7절 베이스라인 결과에 따라 영상 백본만 ImageNet 사전학습 MobileNetV3-Small로
+# 교체한 실험. checkpoint_dir을 분리해 v4와 안 겹치게 한다.
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 8
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 8
+  visual_freeze_layers: 9   # MobileNetV3-Small 13블록 중 하위 9개 동결(상위 4개만 미세조정, BERT와 같은 비율)
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  sample_rate: 16000
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  batch_size: 128
+  epochs: 100
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+  train_manifest: "data/manifests/train.csv"
+  val_manifest: "data/manifests/val.csv"
+  test_manifest: "data/manifests/test.csv"
+  prosody_stats_path: "data/prosody_stats_train.json"
+  # --- 이 파일에서만 다른 부분: v4와 겹치지 않는 체크포인트 경로 ---
+  checkpoint_dir: "checkpoints_visual_pretrained"
+  periodic_checkpoint_dir: "checkpoints_periodic_visual_pretrained"
+  checkpoint_interval: 20
+
+labels:
+  - angry
+  - disgust
+  - fear
+  - happy
+  - sad
+  - surprise
+  - contempt
+  - neutral

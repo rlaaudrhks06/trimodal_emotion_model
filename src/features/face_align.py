@@ -7,11 +7,53 @@
 
 이 모듈은 그 person bbox 영역 안에서 mediapipe로 실제 얼굴을 다시 찾고, 두 눈
 keypoint를 수평으로 맞추도록 회전시킨 뒤 얼굴 bbox 기준으로 크롭한다.
+
+mediapipe 1.0.0부터 레거시 `mp.solutions` API가 완전히 제거되고 Tasks API
+(`mediapipe.tasks`)만 남았다 — 이 API는 .tflite 모델 파일을 직접 준비해야 해서,
+ensure_face_detector_model()이 최초 1회 자동으로 내려받아 캐싱한다.
 """
+import urllib.request
+from pathlib import Path
+
 import cv2
 import numpy as np
 
-_RIGHT_EYE, _LEFT_EYE = 0, 1  # mediapipe FaceDetection relative_keypoints 순서
+import mediapipe as mp
+from mediapipe.tasks.python import vision
+from mediapipe.tasks.python.core.base_options import BaseOptions
+
+_RIGHT_EYE, _LEFT_EYE = 0, 1  # BlazeFace 6-keypoint 순서(레거시/Tasks API 공통)
+
+_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/face_detector/"
+    "blaze_face_short_range/float16/latest/blaze_face_short_range.tflite"
+)
+_DEFAULT_MODEL_PATH = Path.home() / ".cache" / "mediapipe_models" / "blaze_face_short_range.tflite"
+
+
+def ensure_face_detector_model(dest_path: Path = _DEFAULT_MODEL_PATH) -> Path:
+    """얼굴 검출용 .tflite 모델을 최초 1회만 내려받아 캐싱, 이후엔 캐시 재사용.
+
+    ProcessPoolExecutor로 병렬 처리하기 전에 메인 프로세스에서 한 번만 호출해야
+    한다(워커들이 동시에 다운로드를 시도하면 파일이 손상될 수 있음).
+    """
+    if dest_path.exists() and dest_path.stat().st_size > 0:
+        return dest_path
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dest_path.with_suffix(".tmp")
+    print(f"[face_align] 얼굴 검출 모델 다운로드 중: {_MODEL_URL}")
+    urllib.request.urlretrieve(_MODEL_URL, str(tmp_path))
+    tmp_path.replace(dest_path)
+    return dest_path
+
+
+def create_face_detector(model_path: Path, min_detection_confidence: float = 0.5):
+    """워커(클립)마다 한 번만 만들어서 재사용할 FaceDetector 인스턴스."""
+    options = vision.FaceDetectorOptions(
+        base_options=BaseOptions(model_asset_path=str(model_path)),
+        min_detection_confidence=min_detection_confidence,
+    )
+    return vision.FaceDetector.create_from_options(options)
 
 
 def detect_and_align_face(
@@ -23,8 +65,8 @@ def detect_and_align_face(
 ) -> np.ndarray | None:
     """원본 프레임 + person bbox -> 정렬된 얼굴 크롭 [face_size,face_size,3] BGR.
 
-    검출 실패 시 None. detector는 호출자가 미리 만들어 재사용해야 한다
-    (프레임마다 새로 만들면 초기화 비용 때문에 느려짐).
+    검출 실패 시 None. detector는 create_face_detector()로 미리 만들어 재사용해야
+    한다(프레임마다 새로 만들면 초기화 비용 때문에 느려짐).
     """
     xtl, ytl, xbr, ybr = person_bbox
     h, w = frame_bgr.shape[:2]
@@ -36,12 +78,13 @@ def detect_and_align_face(
 
     rh, rw = region.shape[:2]
     rgb = cv2.cvtColor(region, cv2.COLOR_BGR2RGB)
-    results = detector.process(rgb)
-    if not results.detections:
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
+    result = detector.detect(mp_image)
+    if not result.detections:
         return None
 
-    best = max(results.detections, key=lambda d: d.score[0])
-    kp = best.location_data.relative_keypoints
+    best = max(result.detections, key=lambda d: d.categories[0].score)
+    kp = best.keypoints  # NormalizedKeypoint, x/y는 region 기준 0~1 상대좌표(공통)
     right_eye = np.array([kp[_RIGHT_EYE].x * rw, kp[_RIGHT_EYE].y * rh])
     left_eye = np.array([kp[_LEFT_EYE].x * rw, kp[_LEFT_EYE].y * rh])
 
@@ -52,11 +95,11 @@ def detect_and_align_face(
     rot_mat = cv2.getRotationMatrix2D(eye_center, angle, 1.0)
     rotated = cv2.warpAffine(region, rot_mat, (rw, rh))
 
-    bbox = best.location_data.relative_bounding_box
-    bx, by = bbox.xmin * rw, bbox.ymin * rh
-    bw, bh = bbox.width * rw, bbox.height * rh
+    # bounding_box는 Tasks API에서 region 기준 절대 픽셀 좌표(origin_x/y, width/height)
+    bb = best.bounding_box
+    bx, by, bw, bh = bb.origin_x, bb.origin_y, bb.width, bb.height
     # 얼굴 bbox의 네 꼭짓점도 같은 회전 변환을 적용해야 회전된 좌표계에서 정확히 크롭된다
-    corners = np.array([[bx, by], [bx + bw, by], [bx, by + bh], [bx + bw, by + bh]])
+    corners = np.array([[bx, by], [bx + bw, by], [bx, by + bh], [bx + bw, by + bh]], dtype=np.float64)
     corners_h = np.hstack([corners, np.ones((4, 1))])
     rotated_corners = corners_h @ rot_mat.T
     fx1, fy1 = rotated_corners[:, 0].min(), rotated_corners[:, 1].min()

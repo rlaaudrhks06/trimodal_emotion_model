@@ -1,6 +1,13 @@
 # config_prosody_norm.yaml(v4 recipe)과 동일한 규제·prosody 정규화 설정에,
-# 8.7절 베이스라인 결과에 따라 영상 백본만 ImageNet 사전학습 MobileNetV3-Small로
-# 교체한 실험. checkpoint_dir을 분리해 v4와 안 겹치게 한다.
+# 8.7절 베이스라인 결과에 따라 영상 백본만 사전학습 모델로 교체한 실험용 설정.
+# checkpoint_dir을 분리해 v4와 안 겹치게 한다.
+#
+# 이 파일로 백본을 두 번 갈아끼우며 재사용했다(체크포인트 디렉터리는 그대로):
+#   1) ImageNet 사전학습 MobileNetV3-Small — 개선 없음, 더 빨리 과적합해서 폐기.
+#   2) 얼굴인식 사전학습 MobileFaceNet(emotiefflib mbf_va_mtl) — 역시 개선 없었고
+#      (val_acc 23.89%), 원인은 §8.8에서 밝혀짐: face_frames_dir가 애초에 얼굴이
+#      아니라 AI Hub의 인물(person) bbox를 그대로 크롭한 전신 이미지였음.
+#      scripts/refix_face_crops.py로 얼굴 재검출+정렬 후 재학습 필요.
 model:
   d_model: 256
   n_heads: 8

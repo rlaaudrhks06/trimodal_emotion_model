@@ -24,19 +24,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import cv2
 
 from scripts.build_manifest_aihub import MAX_FACE_FRAMES, discover_json_video_pairs, load_json_utterances
-from src.features.face_align import detect_and_align_face
+from src.features.face_align import create_face_detector, detect_and_align_face, ensure_face_detector_model
 
 
-def _refix_one_clip(json_path: Path, video_path: Path, frames_out: Path, face_size: int) -> tuple[str, int, int, str | None]:
-    import mediapipe as mp
-
+def _refix_one_clip(json_path: Path, video_path: Path, frames_out: Path, face_size: int, model_path: Path) -> tuple[str, int, int, str | None]:
     try:
         utterances = load_json_utterances(json_path)
         clip_id = utterances[0]["clip_id"] if utterances else json_path.stem.replace("clip_", "")
     except Exception as e:
         return json_path.stem, 0, 0, f"클립 로드 실패: {e}"
 
-    detector = mp.solutions.face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+    detector = create_face_detector(model_path)
     cap = cv2.VideoCapture(str(video_path))
     n_ok = n_fail = 0
     try:
@@ -88,6 +86,10 @@ def main():
     ap.add_argument("--num-workers", type=int, default=None)
     args = ap.parse_args()
 
+    # 워커들이 동시에 다운로드를 시도하면 파일이 손상될 수 있으므로, 풀 생성 전에
+    # 메인 프로세스에서 한 번만 받아둔다.
+    model_path = ensure_face_detector_model()
+
     pairs = discover_json_video_pairs(args.raw_dir)
     print(f"[refix_face_crops] {len(pairs)}개 (json, video) 쌍 발견")
     if args.limit_clips is not None:
@@ -99,7 +101,7 @@ def main():
     total_ok = total_fail = 0
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = {
-            executor.submit(_refix_one_clip, j, v, args.frames_out, args.face_size): j
+            executor.submit(_refix_one_clip, j, v, args.frames_out, args.face_size, model_path): j
             for j, v in pairs
         }
         for done, future in enumerate(as_completed(futures), 1):

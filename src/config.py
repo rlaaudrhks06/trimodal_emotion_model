@@ -17,11 +17,11 @@ class ModelConfig:
     prosody_dim: int = 10
     # 과적합 대응(2차 학습에서 추가): 각 모듈별 규제 강도를 config.yaml에서 조절 가능하게 함
     backbone_dropout: float = 0.1       # 오디오/비주얼 TemporalConvFrontend
-    visual_cnn_dropout: float = 0.0     # FrameCNN(MobileNetV3) 풀링 후 dropout
+    visual_cnn_dropout: float = 0.0     # FrameCNN(MobileFaceNet) 백본 출력 후 dropout
     classifier_dropout: float = 0.2     # HybridClassifier 최종 MLP
     text_dropout: float = 0.1           # BERT hidden/attention dropout override
     text_freeze_layers: int = 0         # BERT 하위 N개 encoder layer(+embeddings) 동결
-    visual_freeze_layers: int = 9       # MobileNetV3-Small 하위 N개 블록(총 13개) 동결(8.7절 대응)
+    visual_freeze_layers: int = 9       # 0보다 크면 MobileFaceNet 백본 전체 동결, 0이면 미세조정(8.7~8.8절 대응)
 
 
 @dataclass

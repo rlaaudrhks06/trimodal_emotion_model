@@ -47,30 +47,37 @@ class TrimodalEmotionModel(nn.Module):
         self.prosody_gate = ProsodyGatedFusion(hybrid_dim=hybrid_dim, prosody_dim=m.prosody_dim)
         self.classifier = HybridClassifier(hybrid_dim=hybrid_dim, num_classes=m.num_classes, dropout=m.classifier_dropout)
 
-    def _maybe_drop_modalities(self, mel_spec, frames, input_ids, attention_mask):
+    def _maybe_drop_modalities(self, mel_spec, prosody_vec, frames, input_ids, attention_mask):
         """설계 v3 §9 강건성: 학습 시 모달리티 드롭아웃.
 
         배치의 각 샘플에 대해 확률적으로 한 모달리티를 통째로 마스킹한다
         (원본 입력을 0으로 치환 — 오디오/시각은 전부 0, 텍스트는 attention_mask를
         전부 0으로 만들어 사실상 빈 입력으로 취급).
+
+        "오디오" 모달리티는 설계상 멜스펙트로그램 + 운율(prosody) 벡터를 합친
+        개념(§3.5)이므로, 오디오를 드롭할 때는 둘 다 지워야 한다 — prosody_vec만
+        남겨두면 "마이크가 완전히 죽은 상황"을 시뮬레이션하려던 목적이 절반만
+        작동한다(운율 정보가 계속 새어 들어감).
         """
         if not self.training or self.modality_dropout_prob <= 0.0:
-            return mel_spec, frames, input_ids, attention_mask
+            return mel_spec, prosody_vec, frames, input_ids, attention_mask
 
         b = mel_spec.size(0)
         mel_spec, frames = mel_spec.clone(), frames.clone()
+        prosody_vec = prosody_vec.clone()
         attention_mask = attention_mask.clone()
         for i in range(b):
             if random.random() < self.modality_dropout_prob:
                 choice = random.choice(["audio", "visual", "text"])
                 if choice == "audio":
                     mel_spec[i].zero_()
+                    prosody_vec[i].zero_()
                 elif choice == "visual":
                     frames[i].zero_()
                 else:
                     attention_mask[i].zero_()
                     attention_mask[i, 0] = 1  # BERT류는 최소 1개 유효 토큰 필요
-        return mel_spec, frames, input_ids, attention_mask
+        return mel_spec, prosody_vec, frames, input_ids, attention_mask
 
     def forward(
         self,
@@ -82,8 +89,8 @@ class TrimodalEmotionModel(nn.Module):
         audio_padding_mask: torch.Tensor | None = None,  # [B, T_a] True=패딩(배치 내 가변 길이 대비)
         visual_padding_mask: torch.Tensor | None = None,  # [B, T_v] True=패딩
     ) -> torch.Tensor:
-        mel_spec, frames, input_ids, attention_mask = self._maybe_drop_modalities(
-            mel_spec, frames, input_ids, attention_mask
+        mel_spec, prosody_vec, frames, input_ids, attention_mask = self._maybe_drop_modalities(
+            mel_spec, prosody_vec, frames, input_ids, attention_mask
         )
 
         x_a = self.audio_backbone(mel_spec, key_padding_mask=audio_padding_mask)      # [B, T_a, d_model]

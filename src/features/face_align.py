@@ -115,3 +115,37 @@ def detect_and_align_face(
     if face.size == 0:
         return None
     return cv2.resize(face, (face_size, face_size))
+
+
+def extract_aligned_frames(
+    cap: cv2.VideoCapture,
+    start_frame: int,
+    end_frame: int,
+    bbox: tuple[int, int, int, int],
+    out_dir: Path,
+    detector,
+    face_size: int = 112,
+    max_frames: int = 24,
+) -> int:
+    """이미 열린 VideoCapture에서 [start_frame,end_frame] 구간을 max_frames개로
+    균등 샘플링해, bbox 영역 안에서 얼굴을 검출+정렬 후 out_dir/frame_NNN.jpg로 저장.
+
+    build_manifest_aihub.py(신규 배치 최초 추출)와 refix_face_crops.py(기존 배치
+    사후 보정)가 거의 동일한 프레임 샘플링+검출+저장 루프를 각자 갖고 있었던 걸
+    이 함수 하나로 합쳤다. cap의 열기/닫기는 호출자 책임(스크립트마다 열고 닫는
+    시점이 달라서 — build_manifest는 발화마다, refix는 클립마다 재사용).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    step = max(1, (end_frame - start_frame + 1) // max_frames)
+    saved = 0
+    for frame_no in range(start_frame, end_frame + 1, step):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        face = detect_and_align_face(frame, bbox, face_size=face_size, detector=detector)
+        if face is None:
+            continue
+        cv2.imwrite(str(out_dir / f"frame_{saved:03d}.jpg"), face)
+        saved += 1
+    return saved

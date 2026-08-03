@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import cv2
 
 from scripts.build_manifest_aihub import MAX_FACE_FRAMES, discover_json_video_pairs, load_json_utterances
-from src.features.face_align import create_face_detector, detect_and_align_face, ensure_face_detector_model
+from src.features.face_align import create_face_detector, ensure_face_detector_model, extract_aligned_frames
 
 
 def _refix_one_clip(json_path: Path, video_path: Path, frames_out: Path, face_size: int, model_path: Path) -> tuple[str, int, int, str | None]:
@@ -46,20 +46,12 @@ def _refix_one_clip(json_path: Path, video_path: Path, frames_out: Path, face_si
                 continue
 
             start, end = u["script_start"], u["script_end"]
-            step = max(1, (end - start + 1) // MAX_FACE_FRAMES)
             bbox = (int(u["xtl"]), int(u["ytl"]), int(u["xbr"]), int(u["ybr"]))
 
-            saved = 0
-            for frame_no in range(start, end + 1, step):
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
-                ok, frame = cap.read()
-                if not ok:
-                    continue
-                face = detect_and_align_face(frame, bbox, face_size=face_size, detector=detector)
-                if face is None:
-                    continue
-                cv2.imwrite(str(face_dir / f"frame_{saved:03d}.jpg"), face)
-                saved += 1
+            saved = extract_aligned_frames(
+                cap, start, end, bbox, face_dir, detector,
+                face_size=face_size, max_frames=MAX_FACE_FRAMES,
+            )
 
             if saved > 0:
                 # 새로 저장한 것보다 뒤에 남아있는 옛(전신 크롭) 파일은 삭제

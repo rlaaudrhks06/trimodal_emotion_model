@@ -56,7 +56,7 @@ if THROTTLE_CPU:
     cv2.setNumThreads(2)
 
 from src.datasets.labels import RAW_LABEL_ALIASES
-from src.features.face_align import create_face_detector, detect_and_align_face, ensure_face_detector_model
+from src.features.face_align import create_face_detector, ensure_face_detector_model, extract_aligned_frames
 
 TARGET_SR = 16000
 MAX_FACE_FRAMES = 24
@@ -120,21 +120,10 @@ def extract_face_frames(
     """
     bbox_int = [max(0, int(v)) for v in bbox]
     cap = cv2.VideoCapture(str(video_path))
-    total = end_frame - start_frame + 1
-    step = max(1, total // MAX_FACE_FRAMES)
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    saved = 0
-    for i, frame_no in enumerate(range(start_frame, end_frame + 1, step)):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
-        ok, frame = cap.read()
-        if not ok:
-            continue
-        face = detect_and_align_face(frame, bbox_int, face_size=face_size, detector=detector)
-        if face is None:
-            continue
-        cv2.imwrite(str(out_dir / f"frame_{saved:03d}.jpg"), face)
-        saved += 1
+    saved = extract_aligned_frames(
+        cap, start_frame, end_frame, bbox_int, out_dir, detector,
+        face_size=face_size, max_frames=MAX_FACE_FRAMES,
+    )
     cap.release()
     return saved
 

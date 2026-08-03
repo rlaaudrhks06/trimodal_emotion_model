@@ -56,6 +56,7 @@ if THROTTLE_CPU:
     cv2.setNumThreads(2)
 
 from src.datasets.labels import RAW_LABEL_ALIASES
+from src.features.face_align import create_face_detector, detect_and_align_face, ensure_face_detector_model
 
 TARGET_SR = 16000
 MAX_FACE_FRAMES = 24
@@ -106,8 +107,18 @@ def load_json_utterances(json_path: Path) -> list[dict]:
     return list(seen.values())
 
 
-def extract_face_frames(video_path: Path, start_frame: int, end_frame: int, bbox, out_dir: Path, face_size: int = 112) -> int:
-    xtl, ytl, xbr, ybr = [max(0, int(v)) for v in bbox]
+def extract_face_frames(
+    video_path: Path, start_frame: int, end_frame: int, bbox, out_dir: Path,
+    face_size: int = 112, detector=None,
+) -> int:
+    """person bbox 영역 안에서 mediapipe로 실제 얼굴을 검출+정렬해 저장한다.
+
+    §8.8 대응: 예전엔 AI Hub가 제공하는 person(인물) bbox를 그대로 잘라 저장했는데,
+    이게 얼굴이 아니라 사람 전신이라서 사전학습 얼굴 인식 백본이 전부 무용지물이었다
+    (scripts/refix_face_crops.py로 기존 5,200클립을 사후 수정한 이력 참고). 새로
+    추가되는 배치(예: 5201-5600 복구분)는 처음부터 이 방식으로 뽑아 재작업이 없게 한다.
+    """
+    bbox_int = [max(0, int(v)) for v in bbox]
     cap = cv2.VideoCapture(str(video_path))
     total = end_frame - start_frame + 1
     step = max(1, total // MAX_FACE_FRAMES)
@@ -119,11 +130,10 @@ def extract_face_frames(video_path: Path, start_frame: int, end_frame: int, bbox
         ok, frame = cap.read()
         if not ok:
             continue
-        crop = frame[ytl:ybr, xtl:xbr]
-        if crop.size == 0:
+        face = detect_and_align_face(frame, bbox_int, face_size=face_size, detector=detector)
+        if face is None:
             continue
-        crop = cv2.resize(crop, (face_size, face_size))
-        cv2.imwrite(str(out_dir / f"frame_{saved:03d}.jpg"), crop)
+        cv2.imwrite(str(out_dir / f"frame_{saved:03d}.jpg"), face)
         saved += 1
     cap.release()
     return saved
@@ -192,7 +202,7 @@ def discover_json_video_pairs(raw_dir: Path) -> list[tuple[Path, Path]]:
     return pairs
 
 
-def _process_one_clip(json_path: Path, video_path: Path, frames_out: Path) -> tuple[str, list, int, str | None]:
+def _process_one_clip(json_path: Path, video_path: Path, frames_out: Path, face_model_path: Path) -> tuple[str, list, int, str | None]:
     """워커 프로세스에서 클립 하나를 통째로 처리한다.
 
     실측 결과(12시간에 2152/5200) 클립을 하나씩 순차 처리하는 게 병목이었다 —
@@ -209,30 +219,35 @@ def _process_one_clip(json_path: Path, video_path: Path, frames_out: Path) -> tu
     except Exception as e:
         return json_path.stem, [], 0, f"클립 로드 실패: {e}"
 
+    detector = create_face_detector(face_model_path)
     rows, skipped = [], 0
-    for u in utterances:
-        try:
-            label = RAW_LABEL_ALIASES.get(u["emotion_raw"], u["emotion_raw"])
-            utt_id = f"{clip_id}_{u['person_id']}_{u['script_start']}_{u['script_end']}"
-            wav_path = frames_out / "audio" / f"{utt_id}.wav"
-            face_dir = frames_out / "faces" / utt_id
+    try:
+        for u in utterances:
+            try:
+                label = RAW_LABEL_ALIASES.get(u["emotion_raw"], u["emotion_raw"])
+                utt_id = f"{clip_id}_{u['person_id']}_{u['script_start']}_{u['script_end']}"
+                wav_path = frames_out / "audio" / f"{utt_id}.wav"
+                face_dir = frames_out / "faces" / utt_id
 
-            ok_audio = extract_audio_segment(video_path, u["script_start"], u["script_end"], fps, wav_path)
-            n_frames = extract_face_frames(
-                video_path, u["script_start"], u["script_end"],
-                (u["xtl"], u["ytl"], u["xbr"], u["ybr"]), face_dir,
-            )
-        except Exception:
-            skipped += 1
-            continue
-        finally:
-            time.sleep(SLEEP_BETWEEN_UTTERANCES_SEC)
+                ok_audio = extract_audio_segment(video_path, u["script_start"], u["script_end"], fps, wav_path)
+                n_frames = extract_face_frames(
+                    video_path, u["script_start"], u["script_end"],
+                    (u["xtl"], u["ytl"], u["xbr"], u["ybr"]), face_dir,
+                    detector=detector,
+                )
+            except Exception:
+                skipped += 1
+                continue
+            finally:
+                time.sleep(SLEEP_BETWEEN_UTTERANCES_SEC)
 
-        if not ok_audio or n_frames == 0:
-            skipped += 1
-            continue
+            if not ok_audio or n_frames == 0:
+                skipped += 1
+                continue
 
-        rows.append([utt_id, label, str(wav_path), u["script"], str(face_dir)])
+            rows.append([utt_id, label, str(wav_path), u["script"], str(face_dir)])
+    finally:
+        detector.close()
 
     return json_path.stem, rows, skipped, None
 
@@ -254,6 +269,10 @@ def build_manifest(
 ) -> None:
     n_rows = 0
     skipped = 0
+
+    # 워커들이 동시에 다운로드를 시도하면 파일이 손상될 수 있으므로, 풀 생성 전에
+    # 메인 프로세스에서 얼굴 검출 모델을 한 번만 받아둔다.
+    face_model_path = ensure_face_detector_model()
 
     pairs = discover_json_video_pairs(raw_dir)
     print(f"[build_manifest_aihub] {len(pairs)}개 (json, video) 쌍 발견")
@@ -281,7 +300,7 @@ def build_manifest(
     # 클립 하나하나는 서로 독립적이라(다른 클립 결과에 영향 안 줌) 워커 프로세스로 나눠 돌리고,
     # CSV 쓰기만 메인 프로세스가 전담해서 파일 손상 없이 순서 상관없이 flush한다.
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = {executor.submit(_process_one_clip, j, v, frames_out): j for j, v in pairs}
+        futures = {executor.submit(_process_one_clip, j, v, frames_out, face_model_path): j for j, v in pairs}
         for done_count, future in enumerate(as_completed(futures), 1):
             json_path = futures[future]
             try:

@@ -32,7 +32,7 @@ if THROTTLE_CPU:
 from src.config import load_config
 from src.model import TrimodalEmotionModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
-from src.datasets.labels import EMOTION_LABELS, LABEL_TO_IDX
+from src.datasets.labels import EMOTION_LABELS, LABEL_TO_IDX, normalize_label
 
 
 def move_batch_to_device(batch: dict, device: torch.device) -> dict:
@@ -51,7 +51,10 @@ def compute_class_weights(train_ds: ManifestEmotionDataset, device: torch.device
     1/count보다 완만한 1/sqrt(count)로 재시도 — 극단적인 소수 클래스 과대보정을 피한다.
     평균이 1이 되도록 정규화(전체 loss 스케일이 크게 안 변하게).
     """
-    counts = train_ds.df["label"].astype(str).str.strip().str.lower().value_counts()
+    # normalize_label: 매니페스트 CSV엔 "contempt" 문자열이 그대로 남아있으므로
+    # (8->7클래스 병합, src/datasets/labels.py 참고) 여기서도 흡수해야 disgust 카운트가
+    # 안 빠짐 — 안 그러면 contempt 행들이 어느 클래스 가중치에도 안 잡히는 버그가 생김.
+    counts = train_ds.df["label"].astype(str).str.strip().str.lower().map(normalize_label).value_counts()
     weights = torch.zeros(len(EMOTION_LABELS))
     for label, idx in LABEL_TO_IDX.items():
         c = counts.get(label, 0)

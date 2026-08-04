@@ -25,7 +25,7 @@ from transformers import AutoTokenizer
 from ..config import Config
 from ..features.audio_frontend import waveform_to_mel
 from ..features.prosody import extract_prosody
-from .labels import LABEL_TO_IDX
+from .labels import LABEL_TO_IDX, normalize_label
 
 REQUIRED_COLUMNS = ["utt_id", "label", "wav_path", "text", "face_frames_dir"]
 
@@ -145,7 +145,9 @@ class ManifestEmotionDataset(Dataset):
             prosody = np.clip(prosody, self.prosody_clip_lo, self.prosody_clip_hi)
             prosody = (prosody - self.prosody_mean) / self.prosody_std
 
-        label_idx = LABEL_TO_IDX[str(row.label).strip().lower()]
+        # normalize_label: 기존 매니페스트 CSV엔 "contempt" 문자열이 그대로 남아있으므로
+        # (8->7클래스 병합, src/datasets/labels.py 참고) 여기서 흡수한다 — CSV 자체는 안 건드림.
+        label_idx = LABEL_TO_IDX[normalize_label(str(row.label).strip().lower())]
 
         return {
             "utt_id": utt_id,

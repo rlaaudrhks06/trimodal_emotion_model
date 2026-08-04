@@ -21,7 +21,7 @@ model:
   classifier_dropout: 0.35
   text_dropout: 0.2
   text_freeze_layers: 8
-  visual_freeze_layers: 9   # MobileNetV3-Small 13블록 중 하위 9개 동결(상위 4개만 미세조정, BERT와 같은 비율)
+  visual_freeze_layers: 9   # 0보다 크면 MobileFaceNet 백본 전체 동결(§8.8)
 
 text:
   pretrained_model: "klue/bert-base"

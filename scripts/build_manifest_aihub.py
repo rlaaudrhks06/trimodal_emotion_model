@@ -55,7 +55,7 @@ import av
 if THROTTLE_CPU:
     cv2.setNumThreads(2)
 
-from src.datasets.labels import RAW_LABEL_ALIASES
+from src.datasets.labels import normalize_label
 from src.features.face_align import create_face_detector, ensure_face_detector_model, extract_aligned_frames
 
 TARGET_SR = 16000
@@ -213,7 +213,7 @@ def _process_one_clip(json_path: Path, video_path: Path, frames_out: Path, face_
     try:
         for u in utterances:
             try:
-                label = RAW_LABEL_ALIASES.get(u["emotion_raw"], u["emotion_raw"])
+                label = normalize_label(u["emotion_raw"])
                 utt_id = f"{clip_id}_{u['person_id']}_{u['script_start']}_{u['script_end']}"
                 wav_path = frames_out / "audio" / f"{utt_id}.wav"
                 face_dir = frames_out / "faces" / utt_id

@@ -1,0 +1,64 @@
+# config_visual_pretrained.yaml(v5 recipe: 규제+prosody 정규화+수정된 MobileFaceNet
+# 영상 백본)과 완전히 동일하되, §11 다음 단계 1번(8클래스->7클래스 재검토)에 따라
+# 경멸(contempt)을 혐오(disgust)에 병합한 7클래스로 재학습하는 실험.
+#
+# 병합은 데이터가 아니라 코드에서 처리한다 — src/datasets/labels.py의
+# normalize_label()이 매니페스트 CSV의 "contempt" 문자열을 읽을 때 "disgust"로
+# 변환해준다(CSV 자체는 안 건드림). num_classes와 아래 labels: 목록만 7개로
+# 맞추면 된다. checkpoint_dir을 분리해 v5(checkpoints_visual_pretrained)와
+# 안 겹치게 한다.
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 7
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 8
+  visual_freeze_layers: 9   # 0보다 크면 MobileFaceNet 백본 전체 동결(§8.8)
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  sample_rate: 16000
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  batch_size: 128
+  epochs: 100
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+  train_manifest: "data/manifests/train.csv"
+  val_manifest: "data/manifests/val.csv"
+  test_manifest: "data/manifests/test.csv"
+  prosody_stats_path: "data/prosody_stats_train.json"
+  # --- 이 파일에서만 다른 부분: v5와 겹치지 않는 체크포인트 경로 ---
+  checkpoint_dir: "checkpoints_7class"
+  periodic_checkpoint_dir: "checkpoints_periodic_7class"
+  checkpoint_interval: 20
+
+labels:
+  - angry
+  - disgust
+  - fear
+  - happy
+  - sad
+  - surprise
+  - neutral

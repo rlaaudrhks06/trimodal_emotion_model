@@ -1,0 +1,67 @@
+# config_7class.yaml(v6 recipe)와 완전히 동일하되, text_freeze_layers만 8->12로
+# 바꿔 klue/bert-base 12개 층 전부를 동결하는 진단 실험(v7).
+#
+# 배경: v1~v6 전부 특정 에폭(5~16 부근) 이후 val_acc가 정체/하락하고 train_acc만
+# 계속 오르는 과적합이 반복됐다(9장 표, §11). 코드/논문 재검토 결과, 우리가 설계
+# 근거로 삼은 MulT(Tsai et al.) 논문은 애초에 텍스트 인코더를 파인튜닝하지 않고
+# 고정된 GloVe 임베딩을 쓴다 — 반면 우리는 1.1억 파라미터 BERT의 상위 4개 층을
+# 모델 전체와 동일한 단일 lr(2e-4, 사전학습 파인튜닝치고는 상당히 높은 값)로
+# 계속 업데이트해왔다. text_freeze_layers=12(전체 동결)로 BERT를 GloVe처럼
+# "고정된 특징 추출기"로만 쓰면, 이게 과적합의 주범이었는지 코드 수정 없이
+# 싸고 빠르게 확인할 수 있다(text_backbone.py의 동결 로직은 freeze_layers가
+# 층 수와 같아도 정상 동작 — self.bert.encoder.layer[:12]가 전체를 선택함).
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 7
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 12   # 12 = klue/bert-base 전체 층 수 -> BERT 완전 동결(진단용)
+  visual_freeze_layers: 9
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  sample_rate: 16000
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  batch_size: 128
+  epochs: 100
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+  train_manifest: "data/manifests/train.csv"
+  val_manifest: "data/manifests/val.csv"
+  test_manifest: "data/manifests/test.csv"
+  prosody_stats_path: "data/prosody_stats_train.json"
+  # --- 이 파일에서만 다른 부분: v6과 겹치지 않는 체크포인트 경로 ---
+  checkpoint_dir: "checkpoints_bert_frozen"
+  periodic_checkpoint_dir: "checkpoints_periodic_bert_frozen"
+  checkpoint_interval: 20
+
+labels:
+  - angry
+  - disgust
+  - fear
+  - happy
+  - sad
+  - surprise
+  - neutral

@@ -1,25 +1,47 @@
-=== 전체 구조 (data/processed_full, feature_cache, .venv, .git, __pycache__ 제외) ===
+=== 전체 구조 (data/processed_full, feature_cache, raw, .venv, .git, __pycache__ 제외) ===
 .
+  .venv
   requirements.txt
   tests
     test_real_data_smoke.py
     test_forward_smoke.py
   README.md
   archived_runs
+    checkpoint_v6_20epoch
+      checkpoint_epoch60.pt
+      checkpoint_epoch20.pt
+      checkpoint_epoch40.pt
     baseline_visual_best
       best_model.pt
     baseline_visual_refixed_train.log
+    checkpoint_v7_train.log
+    checkpoint_v7_swa_avg.pt
+    checkpoint_v5_best
+      best_model.pt
     baseline_visual_refixed_best
       best_model.pt
     baseline_audio_train.log
     checkpoint_v3_best
       best_model.pt
+    checkpoint_v5_train.log
+    checkpoint_v6_best
+      best_model.pt
+    checkpoint_v9_5epoch
+      checkpoint_epoch5.pt
+      checkpoint_epoch10.pt
+      checkpoint_epoch20.pt
+      checkpoint_epoch15.pt
     checkpoint_v1_train.log
+    checkpoint_v6_train.log
     baseline_visual_pretrained_best
       best_model.pt
     baseline_audio_best
       best_model.pt
+    checkpoint_v7_best
+      best_model.pt
     checkpoint_v4_best
+      best_model.pt
+    checkpoint_v9_best
       best_model.pt
     baseline_visual_train.log
     refix_face_crops_5200clips.log
@@ -27,46 +49,50 @@
       best_model.pt
     checkpoint_v3_train.log
     build_recovered_5201_5600.log
+    checkpoint_v8_train.log
     baseline_visual_pretrained_train.log
     checkpoint_v2_best
       best_model.pt
     checkpoint_v2_train.log
-    csv_summary
-      checkpoint_v3_batch_progress.csv
-      baseline_visual_batch_progress.csv
-      baseline_audio_batch_progress.csv
-      checkpoint_v3_epoch_summary.csv
-      baseline_visual_pretrained_epoch_summary.csv
-      baseline_text_epoch_summary.csv
-      checkpoint_v2_epoch_summary.csv
-      baseline_visual_refixed_batch_progress.csv
-      baseline_visual_epoch_summary.csv
-      checkpoint_v4_epoch_summary.csv
-      checkpoint_v1_epoch_summary.csv
-      baseline_visual_refixed_epoch_summary.csv
-      baseline_text_batch_progress.csv
-      baseline_audio_epoch_summary.csv
-      checkpoint_v2_batch_progress.csv
-      checkpoint_v4_batch_progress.csv
-      baseline_visual_pretrained_batch_progress.csv
+    checkpoint_v8_20epoch
+      checkpoint_epoch20.pt
     checkpoint_v3_20epoch
       checkpoint_epoch20.pt
     baseline_text_best
       best_model.pt
+    checkpoint_v9_swa_avg.pt
+    checkpoint_v5_20epoch
+      checkpoint_epoch20.pt
+      checkpoint_epoch40.pt
     checkpoint_v4_20epoch
       checkpoint_epoch60.pt
       checkpoint_epoch20.pt
       checkpoint_epoch40.pt
     checkpoint_v4_train.log
+    checkpoint_v8_best
+      best_model.pt
+    checkpoint_v7_20epoch
+      checkpoint_epoch60.pt
+      checkpoint_epoch20.pt
+      checkpoint_epoch40.pt
+    checkpoint_v9_train.log
     baseline_text_train.log
+  .git
   project_tree.txt
   data
+    processed_full
     manifests
       train.csv
       test.csv.bak_before_5201_5600
       val.csv
       train.csv.bak_before_5201_5600
+      all.csv
       val.csv.bak_before_5201_5600
+      test.csv
+    feature_cache
+    manifests_si
+      train.csv
+      val.csv
       test.csv
     prosody_stats_train.json
   src
@@ -82,6 +108,7 @@
       audio_frontend.py
       __init__.py
     model_single_modality.py
+    eval_report.py
     models
       common.py
       __init__.py
@@ -96,13 +123,22 @@
       manifest_dataset.py
       __init__.py
   results
+    eval
+      ensemble_v6_v7_v8_v9.json
+      v9_swa.json
+      v9.json
     csv_summary
+      checkpoint_v5_epoch_summary.csv
       checkpoint_v3_batch_progress.csv
       baseline_visual_batch_progress.csv
+      checkpoint_v8_epoch_summary.csv
       baseline_audio_batch_progress.csv
       checkpoint_v3_epoch_summary.csv
+      checkpoint_v9_batch_progress.csv
+      checkpoint_v7_batch_progress.csv
       baseline_visual_pretrained_epoch_summary.csv
       baseline_text_epoch_summary.csv
+      checkpoint_v9_epoch_summary.csv
       checkpoint_v2_epoch_summary.csv
       baseline_visual_refixed_batch_progress.csv
       baseline_visual_epoch_summary.csv
@@ -111,10 +147,14 @@
       baseline_visual_refixed_epoch_summary.csv
       baseline_text_batch_progress.csv
       baseline_audio_epoch_summary.csv
+      checkpoint_v6_batch_progress.csv
       checkpoint_v2_batch_progress.csv
+      checkpoint_v5_batch_progress.csv
+      checkpoint_v7_epoch_summary.csv
+      checkpoint_v6_epoch_summary.csv
       checkpoint_v4_batch_progress.csv
+      checkpoint_v8_batch_progress.csv
       baseline_visual_pretrained_batch_progress.csv
-  error.md
   scripts
     exclude_failed_faces.py
     inspect_refixed_clips.py
@@ -125,20 +165,74 @@
     train_single_modality.py
     __init__.py
     inspect_face_crops.py
+    check_data_quality.py
+    evaluate_ensemble.py
     refix_face_crops.py
     compute_prosody_stats.py
     eda_report.py
     split_manifest.py
     diagnose_dataset.py
+    inspect_predictions.py
+    swa_average.py
   .gitignore
   configs
+    config_discriminative_lr.yaml
+    config_speaker_independent.yaml
+    config_droppath.yaml
     config.yaml
     config_visual_pretrained.yaml
     config_prosody_norm.yaml
+    config_7class.yaml
+    config_bert_frozen.yaml
 
-=== data/processed_full 요약 ===
-audio 파일 수: 80122
-faces 디렉터리 수: 80122
+=== 용량 (archived_runs) ===
+8.0K	archived_runs/checkpoint_v1_train.log
+80K	archived_runs/checkpoint_v2_train.log
+100K	archived_runs/build_recovered_5201_5600.log
+104K	archived_runs/checkpoint_v9_train.log
+116K	archived_runs/baseline_text_train.log
+120K	archived_runs/baseline_audio_train.log
+120K	archived_runs/baseline_visual_pretrained_train.log
+120K	archived_runs/baseline_visual_train.log
+132K	archived_runs/baseline_visual_refixed_train.log
+136K	archived_runs/checkpoint_v8_train.log
+140K	archived_runs/checkpoint_v3_train.log
+188K	archived_runs/checkpoint_v5_train.log
+248K	archived_runs/checkpoint_v4_train.log
+264K	archived_runs/checkpoint_v7_train.log
+268K	archived_runs/checkpoint_v6_train.log
+1.4M	archived_runs/refix_face_crops_5200clips.log
+11M	archived_runs/baseline_audio_best
+12M	archived_runs/baseline_visual_best
+14M	archived_runs/baseline_visual_pretrained_best
+19M	archived_runs/baseline_visual_refixed_best
+424M	archived_runs/baseline_text_best
+459M	archived_runs/checkpoint_v1_best
+459M	archived_runs/checkpoint_v2_best
+459M	archived_runs/checkpoint_v3_20epoch
+459M	archived_runs/checkpoint_v3_best
+459M	archived_runs/checkpoint_v4_best
+466M	archived_runs/checkpoint_v7_swa_avg.pt
+466M	archived_runs/checkpoint_v9_swa_avg.pt
+467M	archived_runs/checkpoint_v5_best
+467M	archived_runs/checkpoint_v6_best
+467M	archived_runs/checkpoint_v7_best
+467M	archived_runs/checkpoint_v8_20epoch
+467M	archived_runs/checkpoint_v8_best
+467M	archived_runs/checkpoint_v9_best
+933M	archived_runs/checkpoint_v5_20epoch
+1.4G	archived_runs/checkpoint_v4_20epoch
+1.4G	archived_runs/checkpoint_v6_20epoch
+1.4G	archived_runs/checkpoint_v7_20epoch
+1.9G	archived_runs/checkpoint_v9_5epoch
 
-=== data/feature_cache 요약 ===
-캐시 파일 수: 0
+=== 용량 (data) ===
+303G	data/feature_cache
+40M	data/manifests
+14M	data/manifests_si
+28G	data/processed_full
+4.0K	data/prosody_stats_train.json
+
+=== 디스크 여유 ===
+Filesystem                   Size  Used Avail Use% Mounted on
+/dev/mapper/vg_data-lv_data  590G  474G   86G  85% /data

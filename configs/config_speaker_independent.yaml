@@ -53,6 +53,12 @@ train:
   feature_cache_dir: "data/feature_cache"   # 발화 단위 캐시라 분할과 무관 — 그대로 재사용
 
   # --- 이 파일에서만 다른 부분: 화자 독립 분할 데이터 ---
+  # 재현 명령 (seed 필수 — 빼먹으면 다른 분할이 나온다):
+  #   python scripts/split_manifest.py --manifest data/manifests/all.csv \
+  #       --out-dir data/manifests_si --unit speaker --seed 2026 --verify
+  # seed 2026을 쓴 이유: 화자그룹이 138개뿐이라 무작위 배정만으로 클래스 비율이 흔들린다.
+  # 학습 전에 라벨 분포만 보고(성능은 보지 않고) 시드 5개를 비교해 편차가 가장 작은 것을
+  # 골랐다 — 층화 분할과 같은 취지다. 편차: seed42 4.12%p / 1 2.91 / 7 2.59 / 2026 2.30 / 777 2.66.
   train_manifest: "data/manifests_si/train.csv"
   val_manifest: "data/manifests_si/val.csv"
   test_manifest: "data/manifests_si/test.csv"

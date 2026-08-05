@@ -1,0 +1,113 @@
+"""체크포인트 앙상블 평가 스크립트. 통합기록 §11.1 A-2.
+
+서로 다른 실험(예: v6/v7처럼 config가 다른 버전)의 체크포인트 여러 개를 각자의
+config로 로드해 test set에 대해 forward한 뒤, softmax 확률을 평균해서 최종
+예측을 만든다. 두 실험이 서로 다른 지점에서 틀리는 경향이 있다면 단일 모델보다
+나을 수 있다는 가정을 검증한다.
+
+실행 예 (v6 + v7 앙상블):
+    python scripts/evaluate_ensemble.py \\
+        --pairs configs/config_7class.yaml checkpoints_7class/best_model.pt \\
+                configs/config_bert_frozen.yaml checkpoints_bert_frozen/best_model.pt \\
+        --manifest data/manifests/test.csv
+"""
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classification_report
+
+from src.config import load_config
+from src.model import TrimodalEmotionModel
+from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
+from src.datasets.labels import EMOTION_LABELS
+
+
+def move_batch_to_device(batch: dict, device: torch.device) -> dict:
+    return {
+        k: (v.to(device) if isinstance(v, torch.Tensor) else v)
+        for k, v in batch.items()
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--pairs", nargs="+", required=True,
+        help="'config1 checkpoint1 config2 checkpoint2 ...' 형태로 짝수 개 지정 (모델마다 자기 config로 로드)",
+    )
+    parser.add_argument("--manifest", type=str, required=True)
+    args = parser.parse_args()
+
+    if len(args.pairs) % 2 != 0:
+        raise ValueError("--pairs는 'config checkpoint' 짝으로 짝수 개여야 함")
+    combos = list(zip(args.pairs[0::2], args.pairs[1::2]))
+
+    device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
+
+    # 첫 config의 train 설정(batch_size, manifest 로딩 방식)을 데이터로더 구성에 재사용.
+    # 모든 버전이 같은 klue/bert-base 토크나이저·같은 manifest 스키마를 쓰므로 안전.
+    first_cfg = load_config(Path(combos[0][0]))
+    train_cfg = first_cfg.raw["train"]
+    collate_fn = make_collate_fn(first_cfg.text_pretrained)
+    test_ds = ManifestEmotionDataset(
+        args.manifest, first_cfg,
+        cache_dir=train_cfg.get("feature_cache_dir"),
+        prosody_stats_path=train_cfg.get("prosody_stats_path"),
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=train_cfg["batch_size"], shuffle=False, collate_fn=collate_fn,
+        num_workers=train_cfg.get("num_workers", 0), pin_memory=(device.type == "cuda"),
+    )
+
+    models = []
+    for cfg_path, ckpt_path in combos:
+        cfg = load_config(Path(cfg_path))
+        model = TrimodalEmotionModel(cfg).to(device)
+        model.load_state_dict(torch.load(ckpt_path, map_location=device))
+        model.eval()
+        models.append(model)
+        print(f"[ensemble] 로드: {cfg_path} + {ckpt_path}")
+
+    all_preds, all_labels = [], []
+    with torch.no_grad():
+        for batch in test_loader:
+            batch = move_batch_to_device(batch, device)
+            probs_sum = None
+            for model in models:
+                logits = model(
+                    mel_spec=batch["mel_spec"],
+                    prosody_vec=batch["prosody_vec"],
+                    frames=batch["frames"],
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    audio_padding_mask=batch["audio_padding_mask"],
+                    visual_padding_mask=batch["visual_padding_mask"],
+                )
+                probs = F.softmax(logits, dim=-1)
+                probs_sum = probs if probs_sum is None else probs_sum + probs
+            preds = (probs_sum / len(models)).argmax(dim=-1)
+            all_preds.extend(preds.cpu().tolist())
+            all_labels.extend(batch["labels"].cpu().tolist())
+
+    acc = accuracy_score(all_labels, all_preds)
+    w_f1 = f1_score(all_labels, all_preds, average="weighted", zero_division=0)
+    cm = confusion_matrix(all_labels, all_preds, labels=list(range(len(EMOTION_LABELS))))
+
+    print(f"\n[앙상블 {len(models)}개 모델] Accuracy   : {acc:.4f}")
+    print(f"[앙상블 {len(models)}개 모델] Weighted F1 : {w_f1:.4f}")
+    print("\nConfusion Matrix (행=정답, 열=예측):")
+    print("        " + " ".join(f"{l[:4]:>6}" for l in EMOTION_LABELS))
+    for label, row in zip(EMOTION_LABELS, cm):
+        print(f"{label[:6]:>8}" + " ".join(f"{v:>6}" for v in row))
+
+    print("\n" + classification_report(all_labels, all_preds, target_names=EMOTION_LABELS, zero_division=0))
+
+
+if __name__ == "__main__":
+    main()

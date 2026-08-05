@@ -1,0 +1,76 @@
+# config_droppath.yaml(v9 레시피 — 현재까지 최고 단일 모델)과 모델 설정은 완전히
+# 동일하되, **화자 독립(subject-independent) 분할 데이터**로 학습하는 실험(v10).
+#
+# 배경(8.14절): v1~v9는 clip_id 단위로만 분할해서 화자가 train/val/test에 모두
+# 흩어져 있었다(test 화자 278명 전원이 train에도 존재). 모델이 "이 사람은 화날 때
+# 이런 얼굴·목소리를 낸다"를 외워도 점수를 받을 수 있는 조건이었으므로, v1~v9의
+# 수치는 실제 배포 조건(처음 보는 사용자)보다 낙관적이다.
+#
+# 이 config는 `split_manifest.py --unit block`으로 다시 나눈 매니페스트를 쓴다.
+# 여기서 나오는 수치가 이 프로젝트의 "진짜" 성능이며, v9(clip-independent)와의
+# 차이가 곧 화자 암기로 얻었던 점수의 크기다.
+#
+# 모델 하이퍼파라미터를 v9와 똑같이 두는 이유: 두 조건의 차이만 순수하게 보기 위함.
+# (v9와 비교 가능해야 "얼마나 부풀려졌었나"를 말할 수 있다.)
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 7
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  cross_attn_drop_path: 0.1   # v9와 동일
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 12      # v7~v9와 동일 — BERT 완전 동결
+  visual_freeze_layers: 9
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  sample_rate: 16000
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  batch_size: 128
+  epochs: 100
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"   # 발화 단위 캐시라 분할과 무관 — 그대로 재사용
+
+  # --- 이 파일에서만 다른 부분: 화자 독립 분할 데이터 ---
+  train_manifest: "data/manifests_si/train.csv"
+  val_manifest: "data/manifests_si/val.csv"
+  test_manifest: "data/manifests_si/test.csv"
+
+  # prosody 정규화 통계도 반드시 새 train 세트에서 다시 뽑아야 한다.
+  # 기존 prosody_stats_train.json은 예전 train(= 새 분할의 test 화자가 섞여 있음)
+  # 에서 fit한 값이라, 그대로 쓰면 정규화 통계를 통한 누수가 남는다.
+  prosody_stats_path: "data/prosody_stats_train_si.json"
+
+  checkpoint_dir: "checkpoints_si"
+  periodic_checkpoint_dir: "checkpoints_periodic_si"
+  checkpoint_interval: 5      # v9와 동일 — SWA 재료 확보용
+
+labels:
+  - angry
+  - disgust
+  - fear
+  - happy
+  - sad
+  - surprise
+  - neutral

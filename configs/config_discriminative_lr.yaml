@@ -1,0 +1,66 @@
+# config_7class.yaml(v6 recipe)과 완전히 동일하되, train.bert_lr을 추가해
+# BERT 파라미터에만 훨씬 낮은 학습률을 쓰는 차등 학습률(discriminative LR) 실험(v8).
+#
+# 배경(8.11/8.12절): v1~v6은 BERT 상위 4개 층(text_freeze_layers=8)에도 나머지
+# 모듈과 동일한 단일 lr(2e-4, 표준 BERT 파인튜닝 lr 2e-5의 10배)을 써서 과적합이
+# 반복됐다. v7은 BERT를 아예 완전 동결(text_freeze_layers=12)해서 과적합을
+# 절반으로 줄였다(격차 46pt대->23.4pt, test 46.74%). 이번엔 "동결 대신 BERT를
+# 표준 lr(2e-5)로 살짝만 계속 적응시키면 v7보다 나은지"를 테스트한다 —
+# text_freeze_layers는 v6과 동일하게 8(상위 4개 층 미세조정 유지)로 두고,
+# scripts/train.py가 새로 지원하는 train.bert_lr만 지정하면 된다(코드는 이미
+# param group을 분리하도록 수정됨 — 이 값이 없으면 기존과 동일하게 단일 lr로 동작).
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 7
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 8    # v6과 동일 — 상위 4개 층은 미세조정 대상으로 남겨둠
+  visual_freeze_layers: 9
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  sample_rate: 16000
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  batch_size: 128
+  epochs: 100
+  lr: 0.0002
+  bert_lr: 0.00002   # 이 파일에서만 다른 부분: BERT 미세조정 층 전용 저lr(표준 관행, 8.11.2절)
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+  train_manifest: "data/manifests/train.csv"
+  val_manifest: "data/manifests/val.csv"
+  test_manifest: "data/manifests/test.csv"
+  prosody_stats_path: "data/prosody_stats_train.json"
+  checkpoint_dir: "checkpoints_discriminative_lr"
+  periodic_checkpoint_dir: "checkpoints_periodic_discriminative_lr"
+  checkpoint_interval: 20
+
+labels:
+  - angry
+  - disgust
+  - fear
+  - happy
+  - sad
+  - surprise
+  - neutral

@@ -152,7 +152,27 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=train_cfg["batch_size"], shuffle=False, collate_fn=collate_fn, **loader_kwargs)
 
     model = TrimodalEmotionModel(cfg, modality_dropout_prob=train_cfg["modality_dropout_prob"]).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=train_cfg["lr"], weight_decay=train_cfg["weight_decay"])
+
+    # 과적합 대응(8.11/8.12절): BERT 상위 층을 나머지 모듈과 동일한 lr로 파인튜닝한 게
+    # v1~v6 반복된 과적합의 주요 원인 중 하나였음을 확인. v7은 BERT를 아예 동결해 검증했고,
+    # 여기서는 "동결 대신 훨씬 낮은 lr(bert_lr, 기본 2e-5 — 표준 BERT 파인튜닝 lr)로 살짝만
+    # 적응시키면 v7보다 나은지"를 테스트하기 위해 param group을 분리한다. bert_lr을 config에
+    # 안 주면 기존과 동일하게 단일 lr로 동작(하위 호환).
+    bert_lr = train_cfg.get("bert_lr", train_cfg["lr"])
+    bert_params = [p for n, p in model.named_parameters() if n.startswith("text_backbone.bert.") and p.requires_grad]
+    other_params = [p for n, p in model.named_parameters() if not n.startswith("text_backbone.bert.") and p.requires_grad]
+    print(
+        f"[train] param groups: bert={sum(p.numel() for p in bert_params):,}개(lr={bert_lr:.1e}), "
+        f"other={sum(p.numel() for p in other_params):,}개(lr={train_cfg['lr']:.1e})",
+        flush=True,
+    )
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": bert_params, "lr": bert_lr},
+            {"params": other_params, "lr": train_cfg["lr"]},
+        ],
+        weight_decay=train_cfg["weight_decay"],
+    )
 
     class_weights = compute_class_weights(train_ds, device)
     # 과적합 대응: label smoothing — 정답 라벨에 100% 확신을 두지 않게 해서 학습 데이터의
@@ -187,19 +207,24 @@ def main():
         train_metrics = run_epoch(model, train_loader, device, train_loss_fn, optimizer, log_label=f"epoch {epoch:03d} train")
         val_metrics = run_epoch(model, val_loader, device, eval_loss_fn, optimizer=None, log_label=f"epoch {epoch:03d} val")
 
-        prev_lr = optimizer.param_groups[0]["lr"]
+        # param_groups[1]이 기존 모든 버전과 동일한 "메인" lr(크로스어텐션/분류기/프론트엔드) —
+        # parse_training_log.py의 lr= 파싱과 버전 간 CSV 호환을 위해 이 값을 lr=로 유지하고,
+        # bert 그룹(param_groups[0])은 별도 bert_lr=로 덧붙인다(파서는 뒤 텍스트를 무시하므로 안전).
+        prev_lr = optimizer.param_groups[1]["lr"]
+        prev_bert_lr = optimizer.param_groups[0]["lr"]
         scheduler.step(val_metrics["loss"])
-        cur_lr = optimizer.param_groups[0]["lr"]
+        cur_lr = optimizer.param_groups[1]["lr"]
+        cur_bert_lr = optimizer.param_groups[0]["lr"]
 
         print(
             f"[epoch {epoch:03d}] "
             f"train_loss={train_metrics['loss']:.4f} train_acc={train_metrics['accuracy']:.4f} | "
             f"val_loss={val_metrics['loss']:.4f} val_acc={val_metrics['accuracy']:.4f} val_f1={val_metrics['weighted_f1']:.4f} "
-            f"lr={cur_lr:.2e}",
+            f"lr={cur_lr:.2e} bert_lr={cur_bert_lr:.2e}",
             flush=True,
         )
         if cur_lr < prev_lr:
-            print(f"  -> val_loss 정체로 학습률 감소: {prev_lr:.2e} -> {cur_lr:.2e}", flush=True)
+            print(f"  -> val_loss 정체로 학습률 감소: {prev_lr:.2e} -> {cur_lr:.2e} (bert: {prev_bert_lr:.2e} -> {cur_bert_lr:.2e})", flush=True)
 
         if val_metrics["accuracy"] > best_val_acc:
             best_val_acc = val_metrics["accuracy"]

@@ -11,13 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
 from torch.utils.data import DataLoader
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classification_report
 
 from src.config import load_config
 from src.model import TrimodalEmotionModel
 from src.model_single_modality import SingleModalityModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
 from src.datasets.labels import EMOTION_LABELS
+from src.eval_report import print_and_collect, save_eval_result
 
 
 def move_batch_to_device(batch: dict, device: torch.device) -> dict:
@@ -35,6 +35,10 @@ def main():
     parser.add_argument(
         "--modality", choices=["audio", "visual", "text"], default=None,
         help="지정하면 SingleModalityModel(베이스라인 체크포인트)을 평가. 생략하면 트리모달 본 모델.",
+    )
+    parser.add_argument(
+        "--save-as", type=str, default=None,
+        help="결과를 results/eval/{이름}.json으로 저장 (예: v9, v7_swa). 생략하면 화면 출력만.",
     )
     args = parser.parse_args()
 
@@ -77,18 +81,14 @@ def main():
             all_preds.extend(logits.argmax(dim=-1).cpu().tolist())
             all_labels.extend(batch["labels"].cpu().tolist())
 
-    acc = accuracy_score(all_labels, all_preds)
-    w_f1 = f1_score(all_labels, all_preds, average="weighted", zero_division=0)
-    cm = confusion_matrix(all_labels, all_preds, labels=list(range(len(EMOTION_LABELS))))
+    metrics = print_and_collect(all_labels, all_preds)
 
-    print(f"Accuracy      : {acc:.4f}")
-    print(f"Weighted F1   : {w_f1:.4f}")
-    print("\nConfusion Matrix (행=정답, 열=예측):")
-    print("        " + " ".join(f"{l[:4]:>6}" for l in EMOTION_LABELS))
-    for label, row in zip(EMOTION_LABELS, cm):
-        print(f"{label[:6]:>8}" + " ".join(f"{v:>6}" for v in row))
-
-    print("\n" + classification_report(all_labels, all_preds, target_names=EMOTION_LABELS, zero_division=0))
+    if args.save_as:
+        save_eval_result(
+            metrics, name=args.save_as, manifest=args.manifest,
+            models=[{"config": args.config, "checkpoint": args.checkpoint}],
+            extra={"modality": args.modality} if args.modality else None,
+        )
 
 
 if __name__ == "__main__":

@@ -20,12 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classification_report
 
 from src.config import load_config
 from src.model import TrimodalEmotionModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
 from src.datasets.labels import EMOTION_LABELS
+from src.eval_report import print_and_collect, save_eval_result
 
 
 def move_batch_to_device(batch: dict, device: torch.device) -> dict:
@@ -42,6 +42,10 @@ def main():
         help="'config1 checkpoint1 config2 checkpoint2 ...' 형태로 짝수 개 지정 (모델마다 자기 config로 로드)",
     )
     parser.add_argument("--manifest", type=str, required=True)
+    parser.add_argument(
+        "--save-as", type=str, default=None,
+        help="결과를 results/eval/{이름}.json으로 저장 (예: ensemble_v6_v7_v8). 생략하면 화면 출력만.",
+    )
     args = parser.parse_args()
 
     if len(args.pairs) % 2 != 0:
@@ -95,18 +99,14 @@ def main():
             all_preds.extend(preds.cpu().tolist())
             all_labels.extend(batch["labels"].cpu().tolist())
 
-    acc = accuracy_score(all_labels, all_preds)
-    w_f1 = f1_score(all_labels, all_preds, average="weighted", zero_division=0)
-    cm = confusion_matrix(all_labels, all_preds, labels=list(range(len(EMOTION_LABELS))))
+    metrics = print_and_collect(all_labels, all_preds, title=f"앙상블 {len(models)}개 모델")
 
-    print(f"\n[앙상블 {len(models)}개 모델] Accuracy   : {acc:.4f}")
-    print(f"[앙상블 {len(models)}개 모델] Weighted F1 : {w_f1:.4f}")
-    print("\nConfusion Matrix (행=정답, 열=예측):")
-    print("        " + " ".join(f"{l[:4]:>6}" for l in EMOTION_LABELS))
-    for label, row in zip(EMOTION_LABELS, cm):
-        print(f"{label[:6]:>8}" + " ".join(f"{v:>6}" for v in row))
-
-    print("\n" + classification_report(all_labels, all_preds, target_names=EMOTION_LABELS, zero_division=0))
+    if args.save_as:
+        save_eval_result(
+            metrics, name=args.save_as, manifest=args.manifest,
+            models=[{"config": c, "checkpoint": k} for c, k in combos],
+            extra={"ensemble_size": len(models), "method": "softmax 확률 산술평균"},
+        )
 
 
 if __name__ == "__main__":

@@ -6,7 +6,8 @@ data/processed_full/
 data/processed/
 data/feature_cache/
 data/manifests/*.csv
-data/manifests_*/*.csv   # 화자독립 분할(manifests_si) 등 — 스크립트+시드로 재현 가능하므로 파일은 안 올림
+# 화자독립 분할(manifests_si) 등 파생 매니페스트 — split_manifest.py + 시드로 재현 가능
+data/manifests_*/*.csv
 data/*.json
 checkpoints/
 checkpoints_periodic/

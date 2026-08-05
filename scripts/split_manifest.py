@@ -44,8 +44,12 @@ utt_id는 "{clip_id}_{person_id}_{start}_{end}" 형식이다.
 import argparse
 import csv
 import random
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.datasets.labels import normalize_label
 
 # AI Hub 멀티모달 영상 데이터의 블록 크기(원본 영상 1편당 클립 수). 8.14.1절 실측 근거.
 CLIPS_PER_BLOCK = 40
@@ -144,10 +148,14 @@ def verify_speaker_independence(splits: dict[str, list[dict]]) -> bool:
     # 클래스 분포도 같이 본다: 분할 단위가 커질수록(클립 3,937개 -> 화자그룹 138개)
     # 무작위 배정만으로 클래스 비율이 틀어질 여지가 커진다. 비율이 크게 어긋나면
     # 다른 split로 학습한 결과끼리 비교할 때 그 차이가 성능 차이로 오해된다.
-    print("\n[verify] split별 클래스 비율(%):")
+    #
+    # normalize_label을 거쳐야 한다 — 매니페스트 CSV엔 "contempt"가 그대로 남아있지만
+    # 모델은 이를 disgust로 병합해서 본다(8.10절). 원본 라벨로 세면 모델이 실제로
+    # 마주하는 분포와 다른 숫자를 보게 된다.
+    print("\n[verify] split별 클래스 비율(%) — 모델이 보는 라벨 기준(contempt는 disgust에 병합):")
     dists = {}
     for name, rows in splits.items():
-        counts = Counter(r["label"] for r in rows)
+        counts = Counter(normalize_label(str(r["label"]).strip().lower()) for r in rows)
         total = sum(counts.values())
         dists[name] = {k: 100 * v / total for k, v in counts.items()}
     all_labels = sorted({k for d in dists.values() for k in d})
@@ -160,6 +168,12 @@ def verify_speaker_independence(splits: dict[str, list[dict]]) -> bool:
         print(f"  {lab:10s}" + "".join(f"{v:>8.2f} " for v in vals) + f"{gap:>8.2f} ")
     verdict = "양호" if worst < 3 else ("주의" if worst < 6 else "심함 — seed를 바꿔 재분할 검토")
     print(f"  -> 클래스별 최대 편차 {worst:.2f}%p ({verdict})")
+
+    # 다수 클래스 기준선: "무조건 최다 클래스만 찍기"로 얻는 정확도.
+    # split이 바뀌면 이 값도 바뀌므로, 모델 정확도를 해석할 기준점으로 함께 기록해야 한다.
+    for name in splits:
+        top_label, top_pct = max(dists[name].items(), key=lambda kv: kv[1])
+        print(f"  {name:5s} 다수 클래스 기준선: {top_pct:.2f}% ({top_label})")
 
     return ok
 

@@ -41,7 +41,9 @@ def main():
         "--pairs", nargs="+", required=True,
         help="'config1 checkpoint1 config2 checkpoint2 ...' 형태로 짝수 개 지정 (모델마다 자기 config로 로드)",
     )
-    parser.add_argument("--manifest", type=str, required=True)
+    parser.add_argument("--manifest", type=str, default=None,
+                        help="생략하면 config의 train.test_manifest를 쓴다 — 다른 분할로 학습한 모델을 "
+                             "옛 test셋으로 잘못 평가하는 사고를 막기 위해 기본값을 config에 맞춘다.")
     parser.add_argument(
         "--save-as", type=str, default=None,
         help="결과를 results/eval/{이름}.json으로 저장 (예: ensemble_v6_v7_v8). 생략하면 화면 출력만.",
@@ -58,6 +60,9 @@ def main():
     # 모든 버전이 같은 klue/bert-base 토크나이저·같은 manifest 스키마를 쓰므로 안전.
     first_cfg = load_config(Path(combos[0][0]))
     train_cfg = first_cfg.raw["train"]
+    if args.manifest is None:
+        args.manifest = train_cfg["test_manifest"]
+        print(f"[ensemble] --manifest 생략됨 -> 첫 config의 test_manifest 사용: {args.manifest}")
     collate_fn = make_collate_fn(first_cfg.text_pretrained)
     test_ds = ManifestEmotionDataset(
         args.manifest, first_cfg,

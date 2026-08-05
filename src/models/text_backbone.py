@@ -33,6 +33,15 @@ class TextBackbone(nn.Module):
             for layer in self.bert.encoder.layer[:freeze_layers]:
                 for p in layer.parameters():
                     p.requires_grad = False
+            # pooler(59만 파라미터)는 forward에서 안 쓴다 — last_hidden_state만 쓰므로
+            # pooler_output은 계산되자마자 버려진다. 그래서 grad가 None이라 실제로 학습되진
+            # 않지만, requires_grad=True로 남아 있으면 "학습 가능 파라미터" 집계와 옵티마이저
+            # param group에 잡혀서 수치가 실제와 어긋난다(예: v7의 895만 중 59만이 허수).
+            # 여기서 같이 얼려 집계를 실제와 일치시킨다. state_dict 키는 그대로라 기존
+            # 체크포인트 로딩에는 영향이 없다.
+            if self.bert.pooler is not None:
+                for p in self.bert.pooler.parameters():
+                    p.requires_grad = False
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         # input_ids/attention_mask: [B, T_t]

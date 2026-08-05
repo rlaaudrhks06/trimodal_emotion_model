@@ -44,7 +44,7 @@ utt_id는 "{clip_id}_{person_id}_{start}_{end}" 형식이다.
 import argparse
 import csv
 import random
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 # AI Hub 멀티모달 영상 데이터의 블록 크기(원본 영상 1편당 클립 수). 8.14.1절 실측 근거.
@@ -140,6 +140,27 @@ def verify_speaker_independence(splits: dict[str, list[dict]]) -> bool:
     else:
         print("\n[verify] 실패 — 화자가 중복됨. --unit speaker 로 다시 시도할 것 "
               "(블록을 넘나드는 화자가 있으면 block 단위만으로는 완전 분리가 안 됨)")
+
+    # 클래스 분포도 같이 본다: 분할 단위가 커질수록(클립 3,937개 -> 화자그룹 138개)
+    # 무작위 배정만으로 클래스 비율이 틀어질 여지가 커진다. 비율이 크게 어긋나면
+    # 다른 split로 학습한 결과끼리 비교할 때 그 차이가 성능 차이로 오해된다.
+    print("\n[verify] split별 클래스 비율(%):")
+    dists = {}
+    for name, rows in splits.items():
+        counts = Counter(r["label"] for r in rows)
+        total = sum(counts.values())
+        dists[name] = {k: 100 * v / total for k, v in counts.items()}
+    all_labels = sorted({k for d in dists.values() for k in d})
+    print(f"  {'label':10s}" + "".join(f"{n:>9s}" for n in splits) + f"{'최대차':>9s}")
+    worst = 0.0
+    for lab in all_labels:
+        vals = [dists[n].get(lab, 0.0) for n in splits]
+        gap = max(vals) - min(vals)
+        worst = max(worst, gap)
+        print(f"  {lab:10s}" + "".join(f"{v:>8.2f} " for v in vals) + f"{gap:>8.2f} ")
+    verdict = "양호" if worst < 3 else ("주의" if worst < 6 else "심함 — seed를 바꿔 재분할 검토")
+    print(f"  -> 클래스별 최대 편차 {worst:.2f}%p ({verdict})")
+
     return ok
 
 

@@ -31,7 +31,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=str(Path(__file__).resolve().parent.parent / "configs" / "config.yaml"))
     parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--manifest", type=str, required=True)
+    parser.add_argument("--manifest", type=str, default=None,
+                        help="생략하면 config의 train.test_manifest를 쓴다 — 다른 분할로 학습한 모델을 "
+                             "옛 test셋으로 잘못 평가하는 사고를 막기 위해 기본값을 config에 맞춘다.")
     parser.add_argument(
         "--modality", choices=["audio", "visual", "text"], default=None,
         help="지정하면 SingleModalityModel(베이스라인 체크포인트)을 평가. 생략하면 트리모달 본 모델.",
@@ -44,6 +46,9 @@ def main():
 
     cfg = load_config(Path(args.config))
     train_cfg = cfg.raw["train"]
+    if args.manifest is None:
+        args.manifest = train_cfg["test_manifest"]
+        print(f"[evaluate] --manifest 생략됨 -> config의 test_manifest 사용: {args.manifest}")
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
 
     num_workers = train_cfg.get("num_workers", 0)

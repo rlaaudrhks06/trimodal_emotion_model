@@ -2,7 +2,7 @@
 
 utt_id는 "{clip_id}_{person_id}_{start}_{end}" 형식이다.
 
-**분할 단위 두 가지 (--unit)**
+**분할 단위 세 가지 (--unit)**
 
 1. `clip` (기존 방식, v1~v9가 쓴 것): clip_id 단위로 통째로 분할.
    같은 클립이 여러 발화로 쪼개져 train/val/test에 걸치는 것을 막는다.
@@ -24,11 +24,22 @@ utt_id는 "{clip_id}_{person_id}_{start}_{end}" 형식이다.
    person_id 단위 분할보다 안전하다(한 클립에 화자가 둘 이상일 때 클립이 쪼개지는
    문제도 없다).
 
+3. `speaker` (가장 엄격, 권장): `block`으로 묶은 뒤, **화자를 공유하는 블록들을
+   하나의 그룹으로 병합**해서 분할한다.
+
+   실측 결과 `block` 단위만으로는 화자 중복이 278명 -> 4명으로 줄지만 0이 되지는
+   않았다. 같은 person_id가 두 개 이상의 블록에 등장하는 경우가 남아 있기 때문이다
+   (같은 배우가 여러 원본 영상에 출연했거나 번호가 재사용된 경우 — 어느 쪽이든
+   "그 번호가 train과 test 양쪽에 있다"는 사실 자체가 문제다).
+
+   블록을 노드로, "같은 person_id를 공유함"을 간선으로 보는 그래프의 **연결 요소
+   (connected component)** 단위로 분할하면, 원인과 무관하게 화자 중복이 0이 된다.
+
 분할 후에는 `--verify`로 실제 화자 중복 여부를 반드시 확인할 것.
 
 사용 예 (화자 독립 분할):
     python scripts/split_manifest.py --manifest data/manifests/all.csv \\
-        --out-dir data/manifests_speaker_independent --unit block --verify
+        --out-dir data/manifests_si --unit speaker --verify
 """
 import argparse
 import csv
@@ -58,6 +69,54 @@ def group_key(utt_id: str, unit: str) -> str:
         return clip_id
 
 
+def merge_groups_sharing_speakers(rows: list[dict], base_unit: str = "block") -> dict[str, str]:
+    """화자를 공유하는 그룹들을 하나로 병합한 매핑(원래 그룹 -> 병합된 그룹)을 만든다.
+
+    union-find로 "같은 person_id가 등장하는 그룹들"을 이어붙인다. 결과적으로
+    한 화자의 발화는 반드시 하나의 병합 그룹 안에만 존재하게 되어,
+    그룹 단위로 나누면 화자가 split 간에 겹칠 수 없다.
+    """
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]  # 경로 압축
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # person_id -> 그 화자가 등장하는 그룹들
+    by_speaker = defaultdict(set)
+    all_groups = set()
+    for row in rows:
+        g = group_key(row["utt_id"], base_unit)
+        all_groups.add(g)
+        find(g)
+        _, person_id = parse_utt_id(row["utt_id"])
+        by_speaker[person_id].add(g)
+
+    n_merged_speakers = 0
+    for person_id, groups in by_speaker.items():
+        if len(groups) > 1:
+            n_merged_speakers += 1
+            it = iter(groups)
+            first = next(it)
+            for g in it:
+                union(first, g)
+
+    mapping = {g: find(g) for g in all_groups}
+    n_components = len(set(mapping.values()))
+    print(f"[split_manifest] {base_unit} {len(all_groups)}개 -> 화자 공유 병합 후 {n_components}개 그룹")
+    if n_merged_speakers:
+        print(f"[split_manifest]   (여러 {base_unit}에 걸쳐 등장하는 화자 {n_merged_speakers}명 때문에 병합 발생)")
+    return mapping
+
+
 def verify_speaker_independence(splits: dict[str, list[dict]]) -> bool:
     """train/val/test 간 person_id가 겹치는지 확인하고 결과를 출력한다."""
     speakers = {
@@ -79,8 +138,8 @@ def verify_speaker_independence(splits: dict[str, list[dict]]) -> bool:
     if ok:
         print("\n[verify] 통과 — 화자가 세 split에 걸쳐 중복되지 않음 (subject-independent)")
     else:
-        print("\n[verify] 실패 — 화자가 중복됨. --unit block 을 썼는지, "
-              "clip_id 번호 체계가 가정(1부터 연속)과 맞는지 확인 필요")
+        print("\n[verify] 실패 — 화자가 중복됨. --unit speaker 로 다시 시도할 것 "
+              "(블록을 넘나드는 화자가 있으면 block 단위만으로는 완전 분리가 안 됨)")
     return ok
 
 
@@ -92,8 +151,9 @@ def main():
     parser.add_argument("--test-ratio", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
-        "--unit", choices=["clip", "block"], default="clip",
-        help="분할 단위. clip=기존 방식(v1~v9), block=40클립 블록 단위(화자 독립, 8.14절 권장)",
+        "--unit", choices=["clip", "block", "speaker"], default="clip",
+        help=("분할 단위. clip=기존 방식(v1~v9), block=40클립 블록, "
+              "speaker=화자를 공유하는 블록들을 병합(가장 엄격, 8.14절 권장)"),
     )
     parser.add_argument(
         "--verify", action="store_true",
@@ -104,9 +164,16 @@ def main():
     with open(args.manifest, encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
+    if args.unit == "speaker":
+        # 블록으로 1차 묶은 뒤, 화자를 공유하는 블록들을 연결 요소로 병합
+        merge_map = merge_groups_sharing_speakers(rows, base_unit="block")
+        key_of = lambda utt_id: merge_map[group_key(utt_id, "block")]
+    else:
+        key_of = lambda utt_id: group_key(utt_id, args.unit)
+
     by_group = defaultdict(list)
     for row in rows:
-        by_group[group_key(row["utt_id"], args.unit)].append(row)
+        by_group[key_of(row["utt_id"])].append(row)
 
     group_ids = list(by_group.keys())
     random.Random(args.seed).shuffle(group_ids)
@@ -120,7 +187,8 @@ def main():
         "train": set(group_ids[n_val + n_test:]),
     }
 
-    unit_label = "클립" if args.unit == "clip" else f"블록({CLIPS_PER_BLOCK}클립)"
+    unit_label = {"clip": "클립", "block": f"블록({CLIPS_PER_BLOCK}클립)",
+                  "speaker": "화자그룹"}[args.unit]
     print(f"[split_manifest] 분할 단위: {args.unit} — 총 {n}개 {unit_label}")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -129,7 +197,7 @@ def main():
 
     for split_name in ["train", "val", "test"]:
         groups = assigned[split_name]
-        split_rows = [r for r in rows if group_key(r["utt_id"], args.unit) in groups]
+        split_rows = [r for r in rows if key_of(r["utt_id"]) in groups]
         splits[split_name] = split_rows
         out_path = args.out_dir / f"{split_name}.csv"
         with open(out_path, "w", newline="", encoding="utf-8") as f:

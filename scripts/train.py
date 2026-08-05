@@ -5,6 +5,7 @@
 """
 import argparse
 import os
+import random
 import sys
 import time
 from pathlib import Path
@@ -33,6 +34,18 @@ from src.config import load_config
 from src.model import TrimodalEmotionModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
 from src.datasets.labels import EMOTION_LABELS, LABEL_TO_IDX, normalize_label
+
+
+def set_seed(seed: int) -> None:
+    # v6까지 seed 고정이 전혀 없어서, 같은 config를 두 번 돌려도 가중치 초기화·
+    # DataLoader 셔플 순서·dropout 마스크가 매번 달라졌다 — v6/v7/v8처럼 0.5~2pp
+    # 단위로 버전을 비교할 때, 그 차이가 설정 변경 효과인지 단순 실행 간 노이즈인지
+    # 구분할 수가 없었다. cudnn 완전결정(deterministic=True)까지는 강제하지 않음 —
+    # 학습 속도 저하가 크고, RNG 시드 고정만으로도 실행 간 노이즈를 충분히 줄일 수 있음.
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def move_batch_to_device(batch: dict, device: torch.device) -> dict:
@@ -98,6 +111,11 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "
             if is_train:
                 optimizer.zero_grad()
                 loss.backward()
+                # 최적화 안정성 대응: gradient clipping이 지금까지 전혀 없었음 — 특히 v8부터
+                # 사전학습 BERT 상위 층과 처음부터 학습하는 모듈을 서로 다른 lr로 같이
+                # 업데이트하는데, 이런 상황에서 튀는 gradient가 학습을 불안정하게 만들 수 있어
+                # 표준 관행(max_norm=1.0)을 추가한다.
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
 
             total_loss += loss.item() * logits.size(0)
@@ -124,13 +142,16 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=str(Path(__file__).resolve().parent.parent / "configs" / "config.yaml"))
+    parser.add_argument("--seed", type=int, default=42, help="재현성/버전 간 비교 노이즈 축소용 — 같은 config를 다른 seed로 여러 번 돌려 결과 폭을 확인할 때 바꿔서 사용")
     args = parser.parse_args()
+
+    set_seed(args.seed)
 
     cfg = load_config(Path(args.config))
     train_cfg = cfg.raw["train"]
 
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    print(f"[train] device = {device}")
+    print(f"[train] device = {device}, seed = {args.seed}")
 
     cache_dir = train_cfg.get("feature_cache_dir")
     # None(기본)이면 기존과 동일하게 동작 — 데이터 전처리 EDA 문서의 prosody 정규화를

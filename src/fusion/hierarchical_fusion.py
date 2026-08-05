@@ -30,12 +30,15 @@ def mean_pool(x: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> 
 
 
 class HierarchicalCrossAttentionFusion(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, ffn_dim: int, n_layers: int = 1, dropout: float = 0.1):
+    def __init__(
+        self, d_model: int, n_heads: int, ffn_dim: int, n_layers: int = 1,
+        dropout: float = 0.1, drop_path: float = 0.0,
+    ):
         super().__init__()
-        self.ca_audio_attends_text = StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout)
-        self.ca_text_attends_audio = StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout)
-        self.ca_visual_attends_at = StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout)
-        self.ca_at_attends_visual = StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout)
+        self.ca_audio_attends_text = StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
+        self.ca_text_attends_audio = StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
+        self.ca_visual_attends_at = StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
+        self.ca_at_attends_visual = StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
 
     def forward(
         self,

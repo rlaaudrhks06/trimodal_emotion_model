@@ -13,6 +13,9 @@ class ModelConfig:
     ffn_dim: int = 1024
     backbone_layers: int = 2
     cross_attn_dropout: float = 0.1
+    # 과적합 대응(§11.2): 크로스어텐션 블록의 residual 분기를 확률적으로 건너뛰는
+    # stochastic depth. 0.0(기본)이면 항등이라 v1~v8과 완전히 동일하게 동작한다.
+    cross_attn_drop_path: float = 0.0
     num_classes: int = 8
     prosody_dim: int = 10
     # 과적합 대응(2차 학습에서 추가): 각 모듈별 규제 강도를 config.yaml에서 조절 가능하게 함

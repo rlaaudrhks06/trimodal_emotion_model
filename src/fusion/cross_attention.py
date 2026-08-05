@@ -9,9 +9,11 @@ Context = LayerNorm( Z + FFN(Z) )
 import torch
 import torch.nn as nn
 
+from ..models.common import DropPath
+
 
 class CrossAttentionBlock(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, ffn_dim: int, dropout: float = 0.1):
+    def __init__(self, d_model: int, n_heads: int, ffn_dim: int, dropout: float = 0.1, drop_path: float = 0.0):
         super().__init__()
         self.mhca = nn.MultiheadAttention(
             embed_dim=d_model, num_heads=n_heads, dropout=dropout, batch_first=True
@@ -25,6 +27,9 @@ class CrossAttentionBlock(nn.Module):
         )
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
+        # 과적합 대응(§11.2): 어텐션 분기와 FFN 분기 각각에 stochastic depth를 건다.
+        # drop_path=0.0(기본)이면 항등이라 기존 버전(v1~v8)과 완전히 동일하게 동작한다.
+        self.drop_path = DropPath(drop_path)
 
     def forward(
         self,
@@ -36,8 +41,9 @@ class CrossAttentionBlock(nn.Module):
         attn_out, _ = self.mhca(
             query=q_seq, key=kv_seq, value=kv_seq, key_padding_mask=kv_key_padding_mask
         )
-        z = self.norm1(q_seq + self.dropout(attn_out))
-        context = self.norm2(z + self.ffn(z))
+        # drop_path가 걸린 샘플은 곁가지가 0이 되어 z = norm1(q_seq) — 즉 이 블록을 건너뛴 셈
+        z = self.norm1(q_seq + self.drop_path(self.dropout(attn_out)))
+        context = self.norm2(z + self.drop_path(self.ffn(z)))
         return context
 
 
@@ -47,10 +53,13 @@ class StackedCrossAttention(nn.Module):
     매 반복마다 동일한 KV_seq를 참조하되, Q_seq는 이전 블록의 출력으로 갱신된다.
     """
 
-    def __init__(self, d_model: int, n_heads: int, ffn_dim: int, n_layers: int = 1, dropout: float = 0.1):
+    def __init__(
+        self, d_model: int, n_heads: int, ffn_dim: int, n_layers: int = 1,
+        dropout: float = 0.1, drop_path: float = 0.0,
+    ):
         super().__init__()
         self.blocks = nn.ModuleList(
-            [CrossAttentionBlock(d_model, n_heads, ffn_dim, dropout) for _ in range(n_layers)]
+            [CrossAttentionBlock(d_model, n_heads, ffn_dim, dropout, drop_path) for _ in range(n_layers)]
         )
 
     def forward(

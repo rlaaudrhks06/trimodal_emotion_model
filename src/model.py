@@ -40,7 +40,7 @@ class TrimodalEmotionModel(nn.Module):
 
         self.fusion = HierarchicalCrossAttentionFusion(
             d_model=m.d_model, n_heads=m.n_heads, ffn_dim=m.ffn_dim,
-            n_layers=1, dropout=m.cross_attn_dropout,
+            n_layers=1, dropout=m.cross_attn_dropout, drop_path=m.cross_attn_drop_path,
         )
 
         hybrid_dim = m.d_model * 2  # [z_cross_*, mean(X_*)] concat

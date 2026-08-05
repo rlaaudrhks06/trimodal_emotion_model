@@ -1,0 +1,72 @@
+# config_bert_frozen.yaml(v7 recipe: BERT 완전 동결)과 완전히 동일하되,
+# 크로스어텐션 4블록에 DropPath(stochastic depth)를 추가하는 실험(v9).
+#
+# 배경(8.11~8.12절): v7에서 BERT 완전 동결로 과적합 격차를 46pt대 -> 23.4pt로
+# 절반까지 줄였지만 0이 되진 않았다. v8(차등 lr로 BERT를 저속 미세조정)은
+# 정확도는 비슷했으나(val 48.08 / test 47.22) 학습 가능 파라미터가 4.2배 많고
+# 과적합도 3배 빨리 진행돼서, 기준선으로는 v7(완전 동결) 쪽이 낫다고 판단했다.
+#
+# 그래서 v7을 기준선으로 두고, 남은 과적합의 다음 용의자인 크로스어텐션 융합
+# 모듈(4블록 약 316만 파라미터 — BERT를 얼린 뒤 남은 학습 가능 파라미터 895만 중
+# 가장 큰 덩어리이고, 지금까지 dropout 외 규제가 전혀 없었음)에 stochastic depth를
+# 적용한다(Huang et al., ECCV 2016 — 12장 참고문헌 19번).
+#
+# drop_path=0.1은 DeiT 등 비전 트랜스포머 계열에서 이 정도 깊이(블록 4개)에
+# 흔히 쓰는 보수적인 시작값이다. 효과가 보이면 0.2까지 올려볼 여지가 있다.
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 7
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  cross_attn_drop_path: 0.1   # 이 파일에서만 다른 부분(v7은 0.0 = 미적용)
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 12   # v7과 동일 — BERT 완전 동결
+  visual_freeze_layers: 9
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  sample_rate: 16000
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  batch_size: 128
+  epochs: 100
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+  train_manifest: "data/manifests/train.csv"
+  val_manifest: "data/manifests/val.csv"
+  test_manifest: "data/manifests/test.csv"
+  prosody_stats_path: "data/prosody_stats_train.json"
+  checkpoint_dir: "checkpoints_droppath"
+  periodic_checkpoint_dir: "checkpoints_periodic_droppath"
+  # v7~v8에서 최고점이 8~13에폭에 나왔는데 20에폭 간격 스냅샷으로는 그 근방을
+  # 하나도 못 잡아서 SWA(8.12절 A-1)가 실패했다 -> 간격을 5로 좁혀 재시도 여지를 남긴다.
+  checkpoint_interval: 5
+
+labels:
+  - angry
+  - disgust
+  - fear
+  - happy
+  - sad
+  - surprise
+  - neutral

@@ -27,6 +27,40 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, : x.size(1), :]
 
 
+class DropPath(nn.Module):
+    """Stochastic Depth — 학습 중 residual 분기(branch)를 샘플 단위로 통째로 건너뛴다.
+
+    dropout이 "뉴런 일부"를 끄는 것과 달리, DropPath는 잔차 연결의 곁가지 전체를
+    확률적으로 0으로 만들어 그 샘플에 대해 해당 블록을 사실상 항등함수로 만든다
+    (Huang et al., "Deep Networks with Stochastic Depth", ECCV 2016).
+    비전 트랜스포머 계열(DeiT 등)에서 소규모 데이터 과적합 대응 표준 기법.
+
+    8.11~8.12절 배경: BERT를 완전 동결(v7)해도 train/val 격차가 23.4pt 남았는데,
+    남은 학습 가능 모듈 중 가장 큰 게 크로스어텐션 4블록(약 316만 파라미터)이다.
+    여기엔 지금까지 dropout 외의 규제가 전혀 없었으므로 이 기법을 적용한다.
+
+    학습 중에만 동작하고 eval()에서는 완전히 통과(항등)한다. 살아남은 경로는
+    1/(1-p)로 나눠 스케일을 보정해서, 학습/추론 시 기댓값이 같게 유지한다.
+    """
+
+    def __init__(self, drop_prob: float = 0.0):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.drop_prob <= 0.0 or not self.training:
+            return x
+        keep_prob = 1.0 - self.drop_prob
+        # 배치의 샘플마다 독립적으로 살릴지 결정 — 첫 차원만 무작위이고 나머지는 브로드캐스트
+        # (한 샘플의 경로를 끄면 그 샘플의 시퀀스·채널 전체가 함께 꺼져야 "경로를 건너뛴" 게 됨)
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        keep_mask = x.new_empty(shape).bernoulli_(keep_prob)
+        return x * keep_mask / keep_prob
+
+    def extra_repr(self) -> str:
+        return f"drop_prob={self.drop_prob}"
+
+
 class TemporalConvFrontend(nn.Module):
     """설계 v3 §4 ②: Temporal Conv + Positional Encoding + TransformerEncoder.
 

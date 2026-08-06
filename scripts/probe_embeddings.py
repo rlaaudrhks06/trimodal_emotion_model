@@ -80,6 +80,64 @@ def probe(X: np.ndarray, y: np.ndarray, seed: int, max_iter: int) -> tuple[float
     return acc, counts.max() / len(y_te), dropped
 
 
+def probe_within_speaker(
+    X: np.ndarray, y: np.ndarray, person_ids: np.ndarray,
+    speakers: list, seed: int, max_iter: int,
+) -> tuple[float, float, int]:
+    """화자 한 명 안에서만 감정을 맞히는 프로브를 화자마다 돌려 평균낸다.
+
+    돌려주는 값: (정규화 상승폭 평균, 평균 우연 수준, 화자당 평균 표본 수)
+
+    화자를 고정하면 목소리·얼굴·배경이 상수가 되므로, 남는 변이는 감정(과 발화 내용)뿐이다.
+    이 조건에서 감정이 훨씬 잘 읽히면 "화자 변이가 감정 신호를 덮고 있었다"는 뜻이고,
+    별 차이가 없으면 화자 정보는 그냥 같이 들어있을 뿐 방해는 아니라는 뜻이다.
+
+    화자마다 감정 분포가 달라 우연 수준도 제각각이므로, 절대 정확도가 아니라
+    정규화 상승폭 (acc-chance)/(1-chance) 로 모아야 화자 간 평균이 의미를 갖는다.
+    """
+    lifts, chances, sizes = [], [], []
+    for spk in speakers:
+        m = person_ids == spk
+        Xs, ys = X[m], y[m]
+        if len(np.unique(ys)) < 2:
+            continue  # 감정이 한 종류뿐인 화자는 분류 문제가 성립하지 않음
+        try:
+            acc, chance, _ = probe(Xs, ys, seed, max_iter)
+        except ValueError:
+            continue  # 층화 분할이 불가능할 만큼 표본이 적은 화자는 건너뜀
+        lifts.append((acc - chance) / (1 - chance))
+        chances.append(chance)
+        sizes.append(len(ys))
+    if not lifts:
+        return float("nan"), float("nan"), 0
+    return float(np.mean(lifts)), float(np.mean(chances)), int(np.mean(sizes))
+
+
+def probe_size_matched(
+    X: np.ndarray, y: np.ndarray, n_samples: int,
+    seed: int, max_iter: int, n_repeats: int = 5,
+) -> float:
+    """화자를 섞은 채로 **화자 내 프로브와 같은 표본 수만** 써서 돌리는 대조군.
+
+    이게 없으면 결론을 못 낸다. 화자 내 프로브는 데이터가 1/화자수로 줄어드는데,
+    선형 프로브라도 512차원을 200여 개 표본으로 맞추면 성능이 떨어진다. 대조군 없이
+    "화자 내 정확도가 낮다"를 보면 **화자 변이가 문제가 아니어서인지, 그냥 데이터가
+    적어서인지** 구분할 수 없다. 같은 크기로 맞춰야 차이가 오롯이 '화자 고정' 효과가 된다.
+
+    표본을 무작위로 뽑는 만큼 뽑기 운을 타므로 여러 번 반복해 평균낸다.
+    """
+    rng = np.random.default_rng(seed)
+    lifts = []
+    for r in range(n_repeats):
+        idx = rng.choice(len(y), size=min(n_samples, len(y)), replace=False)
+        try:
+            acc, chance, _ = probe(X[idx], y[idx], seed + r, max_iter)
+        except ValueError:
+            continue
+        lifts.append((acc - chance) / (1 - chance))
+    return float(np.mean(lifts)) if lifts else float("nan")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--emb", required=True, help="extract_embeddings.py가 만든 .npz")
@@ -88,6 +146,10 @@ def main():
                              "층화 분할이 불가능하고 결과만 흔든다")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-iter", type=int, default=1000)
+    parser.add_argument("--within-speaker", action="store_true",
+                        help="화자를 고정한 채 감정을 프로빙하고, 같은 표본 수의 화자혼합 "
+                             "대조군과 비교한다 — 화자 정보가 '같이 들어있는' 것인지 "
+                             "'감정 판별을 방해하는' 것인지 가른다")
     args = parser.parse_args()
 
     d = np.load(args.emb, allow_pickle=False)
@@ -142,6 +204,39 @@ def main():
                        "감정 쪽이 강함" if r < 0.8 else "비슷함")
         print(f"  {VECTOR_DESC[name]:16} 감정 {100*le:+6.2f}%p / 화자 {100*ls:+6.2f}%p "
               f"(비 {ratio_s}) -> {verdict}")
+
+    if args.within_speaker:
+        print()
+        print("=" * 72)
+        print("화자 고정 감정 프로빙 — 화자 변이가 감정 신호를 덮고 있는가")
+        print("=" * 72)
+        spk_list = sorted(keep)
+        print(f"대상 화자 {len(spk_list)}명. 정규화 상승폭 (정확도-우연)/(1-우연) 으로 비교한다.")
+        print()
+        # 화자당 표본 수는 X와 무관(person_ids만으로 정해짐)하므로 루프 밖에서 한 번만 구한다.
+        # 루프 안에서 덮어쓴 값을 루프 뒤에서 출력하면 마지막 반복 값에 의존하게 되어 위험하다.
+        avg_n = int(np.mean([(person_ids == s).sum() for s in spk_list]))
+
+        print(f"{'표현':22} {'전체':>9} {'화자내':>9} {'크기맞춘대조':>13} {'화자내-대조':>12}")
+        print("─" * 72)
+        for name in VECTOR_NAMES:
+            X = d[name]
+            e_acc, e_ch = results[(name, "감정")]
+            full = (e_acc - e_ch) / (1 - e_ch)
+            wl, _, _ = probe_within_speaker(
+                X[spk_mask], labels[spk_mask], person_ids[spk_mask],
+                spk_list, args.seed, args.max_iter)
+            ctrl = probe_size_matched(X, labels, avg_n, args.seed, args.max_iter)
+            print(f"{VECTOR_DESC[name]+' ('+name+')':22} {100*full:>8.1f}% "
+                  f"{100*wl:>8.1f}% {100*ctrl:>12.1f}% {100*(wl-ctrl):>+11.1f}%p")
+        print("─" * 72)
+        print(f"대조군은 화자를 섞은 채 화자당 평균 표본 수({avg_n}개)만 써서 5회 반복 평균.")
+        print()
+        print("해석: 마지막 열('화자내 - 대조')이 결론이다. 표본 수를 맞췄으므로")
+        print("      이 차이는 오롯이 '화자를 고정한 효과'다.")
+        print("  크게 양수  -> 화자 변이가 감정 신호를 덮고 있었다. 제거하면 이득이 크다")
+        print("  0 근처     -> 화자 정보는 공존할 뿐 방해가 아니다. 제거해도 감정 성능은 안 오른다")
+        print("  음수       -> 화자 간 대비 자체가 감정 판별에 쓰이고 있었다(제거하면 손해)")
 
     print()
     print("참고: 감정 클래스별 분포")

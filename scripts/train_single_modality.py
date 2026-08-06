@@ -61,6 +61,15 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=train_cfg["batch_size"], shuffle=True, collate_fn=collate_fn, **loader_kwargs)
     val_loader = DataLoader(val_ds, batch_size=train_cfg["batch_size"], shuffle=False, collate_fn=collate_fn, **loader_kwargs)
 
+    # v12 보조 학습은 트리모달 본 모델 전용이다(브랜치가 셋 있어야 의미가 있고,
+    # SingleModalityModel.forward에는 return_aux도 없다). config에 켜져 있어도 이 스크립트는
+    # 그냥 무시하는데, 무시했다는 사실을 안 알려주면 "보조 학습이 돌고 있다"고 착각하게 된다.
+    if float(train_cfg.get("aux_loss_weight", 0.0)) > 0 or cfg.model.aux_head_dim > 0:
+        print("[train_single_modality] 주의: config의 보조 학습 설정"
+              f"(aux_loss_weight={train_cfg.get('aux_loss_weight', 0)}, "
+              f"aux_head_dim={cfg.model.aux_head_dim})은 **무시된다** — "
+              "보조 학습은 트리모달 본 모델(scripts/train.py)에서만 동작한다.", flush=True)
+
     model = SingleModalityModel(cfg, modality=args.modality).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=train_cfg["lr"], weight_decay=train_cfg["weight_decay"])
 

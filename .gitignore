@@ -21,3 +21,6 @@ archived_runs/
 #   results/eval/        : 평가 결과 JSON (test accuracy/F1/혼동행렬 + 재현에 필요한 config·checkpoint 경로)
 # 체크포인트(.pt)는 개당 약 488MB라 git에 넣지 않는다 — 서버 archived_runs/에만 보관하고,
 # 위 두 디렉터리가 "그 체크포인트로 무엇을 얻었는지"의 기록 역할을 한다.
+
+# safetensors 변환본 (1.2GB) — convert_to_safetensors.py로 재생성 가능
+models/

@@ -35,7 +35,14 @@ text:
 
 audio:
   backbone: "wav2vec2"        # "mel"이면 기존 경로(하위호환 기본값)
-  pretrained_model: "facebook/wav2vec2-large-xlsr-53"
+  # HF 원본이 아니라 로컬 변환본을 가리킨다.
+  # 이유: transformers 최신 버전이 CVE-2025-32434 때문에 torch<2.6에서 .bin 로딩을
+  # 거부하는데, facebook/wav2vec2-* 계열은 safetensors를 제공하지 않는다. 서버 torch는
+  # 2.5.1+cu121이고 이를 올리면 cu121에 맞춰둔 학습 환경 전체가 위험해지므로,
+  # 가중치만 safetensors로 한 번 변환해서 쓴다(원본과 값이 완전히 동일함을 확인).
+  #   python scripts/convert_to_safetensors.py \
+  #       --repo facebook/wav2vec2-large-xlsr-53 --out models/wav2vec2-large-xlsr-53
+  pretrained_model: "models/wav2vec2-large-xlsr-53"
   w2v_layer: 12               # 0=임베딩 출력, 1~24=트랜스포머 층, 음수도 가능(-1=마지막)
   w2v_freeze: true            # 3.17억 파라미터 — v7 교훈대로 동결하고 특징 추출기로만 사용
   sample_rate: 16000

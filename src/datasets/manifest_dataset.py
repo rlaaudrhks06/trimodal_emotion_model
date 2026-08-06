@@ -29,6 +29,24 @@ from .labels import LABEL_TO_IDX, normalize_label
 
 REQUIRED_COLUMNS = ["utt_id", "label", "wav_path", "text", "face_frames_dir"]
 
+# v12 보조 라벨(11.2절): AI Hub 원본은 발화마다 감정 라벨을 네 개 갖고 있고,
+# 우리가 정답으로 쓰는 multimodal 라벨과 나머지 셋의 일치율이 크게 다르다
+# (소리 77.35% / 영상 41.69% / 텍스트 30.87%). 각 브랜치가 "자기 입력에 답이 있는"
+# 과제를 함께 풀도록 보조 라벨을 실어 나른다. scripts/add_modality_labels.py가 채운다.
+#
+# 매니페스트 컬럼명은 AI Hub 원본 표기(image/sound/text)를 따르고, 배치 키는 모델의
+# 브랜치 이름(visual/audio/text)을 따른다 — 모델 쪽에서 어느 브랜치용인지 헷갈리지 않게.
+AUX_LABEL_COLUMNS = {
+    "label_image": "aux_visual",
+    "label_sound": "aux_audio",
+    "label_text": "aux_text",
+}
+
+# CrossEntropyLoss가 무시하는 기본 인덱스. 보조 라벨이 비어 있거나(원본 미발견)
+# 우리 7클래스 체계로 정규화되지 않는 값이면 이걸 넣어, 그 표본만 보조 손실에서
+# 자동으로 빠지게 한다 — 호출부에서 마스킹을 따로 구현할 필요가 없다.
+IGNORE_INDEX = -100
+
 
 def load_face_frames(frames_dir: str, face_size: int, max_frames: int = 32) -> np.ndarray:
     """얼굴 크롭 프레임 디렉터리 -> [T_v, 3, H, W] **uint8**(0~255).
@@ -84,6 +102,10 @@ class ManifestEmotionDataset(Dataset):
         missing = [c for c in REQUIRED_COLUMNS if c not in self.df.columns]
         if missing:
             raise ValueError(f"매니페스트에 필수 컬럼이 없습니다: {missing}")
+
+        # 보조 라벨 컬럼은 있으면 쓰고 없으면 그냥 지나간다 — 컬럼이 없는 기존
+        # 매니페스트(v1~v11)로는 배치에 aux_* 키 자체가 안 생겨 동작이 완전히 동일하다.
+        self.aux_columns = {c: k for c, k in AUX_LABEL_COLUMNS.items() if c in self.df.columns}
 
         self.cfg = cfg
         self.max_audio_seconds = max_audio_seconds
@@ -173,6 +195,11 @@ class ManifestEmotionDataset(Dataset):
             "text": str(row.text),
             "label": label_idx,
         }
+        for col, key in self.aux_columns.items():
+            # 빈 값(원본 미발견)이나 우리 체계 밖의 값은 IGNORE_INDEX로 둔다.
+            # pandas는 빈 칸을 NaN(float)으로 읽으므로 문자열 변환 후 판정해야 한다.
+            raw = str(row[col]).strip().lower()
+            item[key] = LABEL_TO_IDX.get(normalize_label(raw), IGNORE_INDEX) if raw and raw != "nan" else IGNORE_INDEX
         if self.return_waveform:
             import soundfile as sf
             wav, sr = sf.read(row.wav_path, dtype="float32", always_2d=False)
@@ -237,6 +264,12 @@ class CollateFn:
                 wav_mask[i, : len(w)] = 1
             out_extra["waveform"] = torch.from_numpy(wav_arr)
             out_extra["wav_attention_mask"] = torch.from_numpy(wav_mask)
+
+        # v12 보조 라벨. 데이터셋이 실어줬을 때만 배치에 들어간다("waveform"과 같은 규약).
+        # 값이 IGNORE_INDEX인 표본은 CrossEntropyLoss가 알아서 건너뛴다.
+        for key in AUX_LABEL_COLUMNS.values():
+            if key in batch[0]:
+                out_extra[key] = torch.tensor([b[key] for b in batch], dtype=torch.long)
 
         return {
             **out_extra,

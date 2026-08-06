@@ -48,7 +48,9 @@ def main():
     cache_dir = train_cfg.get("feature_cache_dir")
     prosody_stats_path = train_cfg.get("prosody_stats_path")
     collate_fn = make_collate_fn(cfg.text_pretrained)
-    test_ds = ManifestEmotionDataset(args.manifest, cfg, cache_dir=cache_dir, prosody_stats_path=prosody_stats_path)
+    test_ds = ManifestEmotionDataset(args.manifest, cfg, cache_dir=cache_dir,
+                                     prosody_stats_path=prosody_stats_path,
+                                     return_waveform=(cfg.audio_backbone == "wav2vec2"))
     test_loader = DataLoader(
         # 학습 때와 같은 batch_size 사용 — 하드코딩된 16보다 훨씬 빠르고, 배치 크기가
         # 결과(정확도/지표)에 영향을 주지 않으므로 값을 맞출 이유는 없지만 속도상 유리하다.

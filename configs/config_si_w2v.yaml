@@ -1,0 +1,81 @@
+# 트리모달 + wav2vec2 오디오 백본 (v11) — config_speaker_independent.yaml(v10)에서
+# 오디오 백본만 멜 -> wav2vec2로 바꾼 것.
+#
+# 근거(8.18절 / 11.0.1절): 같은 화자 독립 분할·같은 seed·같은 하이퍼파라미터에서
+# 오디오 단독 베이스라인을 두 백본으로 돌려 비교한 결과가 결정적이었다.
+#
+#   멜        최고 val 31.74%  (기준선 27.00% 대비 +4.74%p)
+#   wav2vec2  최고 val 39.48%  (기준선 27.00% 대비 +12.48%p)
+#
+# 기준선 대비 상승폭이 2.6배다. 이 프로젝트에서 단일 변경으로 이만한 개선은 없었다
+# (v5 얼굴 크롭 버그 수정이 test +3.05%p, v6 클래스 병합이 +2.16%p).
+# 오디오 브랜치가 사실상 무력한 상태에서 실질적 기여자로 바뀔 것으로 기대한다.
+#
+# **비용을 알고 가야 한다**:
+#   - 학습 시간: 오디오 단독 기준 2.0분 -> 16.2분/에폭(8배). 트리모달은 9.5분 -> 약 24분 예상.
+#   - 모델 크기: 1.21억 -> 4.37억 파라미터(동결이라 학습분은 836만 -> 876만으로 거의 그대로).
+#     추론 비용과 로봇 탑재 부담은 늘어난다(3.7절 경량화 과제와 충돌 — 통합 후 재검토 필요).
+#   - epochs를 40으로 낮춘 이유: v9·v10 모두 8~13에폭에서 정점이었다. 40이면 충분하고
+#     74에폭(30시간)이 아니라 16시간이면 끝난다.
+#
+# 모델 하이퍼파라미터는 v10과 완전히 동일하게 두어 "오디오 백본 교체" 효과만 분리해서 본다.
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 7
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  cross_attn_drop_path: 0.1
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 12
+  visual_freeze_layers: 9
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  backbone: "wav2vec2"        # ← v10과 다른 유일한 모델 설정
+  # HF 원본이 아니라 로컬 변환본. transformers 최신 버전이 CVE-2025-32434 때문에
+  # torch<2.6에서 .bin 로딩을 거부하는데 facebook/wav2vec2-*는 safetensors가 없다.
+  # 서버 torch는 2.5.1+cu121이고 올리면 학습 환경이 위험해지므로 가중치만 변환해 쓴다.
+  #   python scripts/convert_to_safetensors.py \
+  #       --repo facebook/wav2vec2-large-xlsr-53 --out models/wav2vec2-large-xlsr-53
+  pretrained_model: "models/wav2vec2-large-xlsr-53"
+  w2v_layer: 12               # SER은 마지막 층보다 중간 층이 낫다는 보고가 일관됨(8.18.2절)
+  w2v_freeze: true            # v7 교훈 — 이 데이터 규모에서 대형 사전학습 모델 파인튜닝은 과적합
+  sample_rate: 16000
+  n_mels: 80                  # wav2vec2 경로에선 안 쓰이지만 스키마 유지를 위해 남김
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  batch_size: 64              # wav2vec2 forward가 메모리를 더 쓰므로 v10의 128 -> 64
+  epochs: 40
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+
+  # 화자 독립 분할 (8.14/8.17절). 재현 명령:
+  #   python scripts/split_manifest.py --manifest data/manifests/all.csv \
+  #       --out-dir data/manifests_si --unit speaker --seed 2026 --verify
+  train_manifest: "data/manifests_si/train.csv"
+  val_manifest: "data/manifests_si/val.csv"
+  test_manifest: "data/manifests_si/test.csv"
+  prosody_stats_path: "data/prosody_stats_train_si.json"
+
+  checkpoint_dir: "checkpoints_si_w2v"
+  periodic_checkpoint_dir: "checkpoints_periodic_si_w2v"
+  checkpoint_interval: 5

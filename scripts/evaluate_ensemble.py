@@ -61,6 +61,7 @@ def main():
         args.manifest, first_cfg,
         cache_dir=train_cfg.get("feature_cache_dir"),
         prosody_stats_path=train_cfg.get("prosody_stats_path"),
+        return_waveform=(first_cfg.audio_backbone == "wav2vec2"),
     )
     test_loader = DataLoader(
         test_ds, batch_size=train_cfg["batch_size"], shuffle=False, collate_fn=collate_fn,

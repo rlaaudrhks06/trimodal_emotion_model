@@ -165,8 +165,14 @@ def main():
     # 적용한 A/B 비교 run에서만 config.yaml에 이 경로를 지정한다.
     prosody_stats_path = train_cfg.get("prosody_stats_path")
     collate_fn = make_collate_fn(cfg.text_pretrained)
-    train_ds = ManifestEmotionDataset(train_cfg["train_manifest"], cfg, cache_dir=cache_dir, prosody_stats_path=prosody_stats_path)
-    val_ds = ManifestEmotionDataset(train_cfg["val_manifest"], cfg, cache_dir=cache_dir, prosody_stats_path=prosody_stats_path)
+    # wav2vec2 오디오 백본은 멜이 아니라 원본 파형을 받는다(8.18절).
+    need_wav = cfg.audio_backbone == "wav2vec2"
+    ds_kwargs = dict(cache_dir=cache_dir, prosody_stats_path=prosody_stats_path, return_waveform=need_wav)
+    train_ds = ManifestEmotionDataset(train_cfg["train_manifest"], cfg, **ds_kwargs)
+    val_ds = ManifestEmotionDataset(train_cfg["val_manifest"], cfg, **ds_kwargs)
+    if need_wav:
+        print(f"[train] wav2vec2 오디오 백본 — {cfg.audio_pretrained} "
+              f"layer={cfg.audio_w2v_layer} freeze={cfg.audio_w2v_freeze}", flush=True)
 
     # num_workers>0이면 오디오/영상 전처리(느린 CPU 작업)를 여러 프로세스가 병렬로 미리
     # 준비해두므로 GPU가 놀지 않는다 — 노트북에서는 0(안전), 전용 서버에서는 CPU 코어 수만큼 올릴 것.

@@ -76,6 +76,7 @@ def main():
         args.manifest, first_cfg,
         cache_dir=train_cfg.get("feature_cache_dir"),
         prosody_stats_path=train_cfg.get("prosody_stats_path"),
+        return_waveform=(first_cfg.audio_backbone == "wav2vec2"),
     )
     loader = DataLoader(ds, batch_size=train_cfg["batch_size"], shuffle=False, collate_fn=collate_fn,
                         num_workers=train_cfg.get("num_workers", 0), pin_memory=(device.type == "cuda"))

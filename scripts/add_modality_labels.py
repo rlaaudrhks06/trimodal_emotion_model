@@ -82,6 +82,9 @@ def collect_labels(raw_dir: Path) -> dict[str, dict[str, str]]:
     # 세면 "13만 개 제외"처럼 실제보다 몇 배 부풀려진 수가 찍혀 데이터를 크게 잃은 것으로
     # 오해하게 된다(실측: 카운터 130,515 vs 실제 수집 78,848 + 매칭률 98.3%).
     failed_utts: set[str] = set()
+    # 일부 모달리티만 없는 경우도 따로 센다 — 어느 모달리티가 얼마나 비는지 보여야
+    # 보조 손실에서 그 항이 얼마나 빠지는지 가늠할 수 있다.
+    per_modality_missing: Counter = Counter()
     n_bad_json = 0
     for i, fp in enumerate(files, 1):
         d = read_json(fp)
@@ -102,15 +105,24 @@ def collect_labels(raw_dir: Path) -> dict[str, dict[str, str]]:
                 if utt_id in out:
                     continue  # 같은 발화가 여러 프레임에 반복 등장 — 첫 것만
                 em = o.get("emotion", {})
-                try:
-                    labs = {m: normalize_label(em[m]["emotion"]) for m in MODALITIES}
-                except (KeyError, TypeError):
-                    failed_utts.add(utt_id)
+
+                # **모달리티마다 독립적으로 판정한다.** 처음엔 셋을 한꺼번에 읽어 하나라도
+                # 실패하면 통째로 버렸는데, 실측해보니 실패는 전부 `image` 필드 부재였고
+                # `sound`·`text`는 멀쩡히 있었다. 즉 정답과 가장 잘 맞는 소리 라벨(74%)까지
+                # image가 없다는 이유로 버리고 있었다. 있는 것만 채우고 없는 것만 비운다.
+                labs = {}
+                for m in MODALITIES:
+                    node = em.get(m)
+                    if not isinstance(node, dict) or "emotion" not in node:
+                        continue
+                    v = normalize_label(node["emotion"])
+                    # 병합/별칭을 거쳤는데도 우리 체계에 없는 값은 그 모달리티만 비운다.
+                    if v in EMOTION_LABELS:
+                        labs[m] = v
+                if not labs:
+                    failed_utts.add(utt_id)  # 셋 다 못 얻은 발화만 실패로 센다
                     continue
-                # 병합/별칭을 거쳤는데도 우리 체계에 없는 값은 버린다(빈 값으로 남음).
-                if any(v not in EMOTION_LABELS for v in labs.values()):
-                    failed_utts.add(utt_id)
-                    continue
+                per_modality_missing.update(m for m in MODALITIES if m not in labs)
                 out[utt_id] = labs
         if i % 500 == 0:
             print(f"    {i:,}/{len(files):,} 클립  (누적 발화 {len(out):,})", flush=True)
@@ -120,7 +132,10 @@ def collect_labels(raw_dir: Path) -> dict[str, dict[str, str]]:
     # 성공 뒤 다른 프레임에서 실패한 경우도 있으므로, 끝내 못 얻은 것만 남긴다
     failed_utts -= out.keys()
     if failed_utts:
-        print(f"[add_labels] emotion 필드가 없거나 미지원 라벨인 발화 {len(failed_utts):,}개 제외")
+        print(f"[add_labels] 세 모달리티 라벨을 하나도 못 얻은 발화 {len(failed_utts):,}개 제외")
+    if per_modality_missing:
+        detail = ", ".join(f"{m} {n:,}개" for m, n in per_modality_missing.most_common())
+        print(f"[add_labels] 일부 모달리티만 빈 발화: {detail} (나머지 모달리티는 정상 사용)")
     return out
 
 
@@ -138,7 +153,8 @@ def annotate(manifest: Path, table: dict[str, dict[str, str]], backup: bool) -> 
         if labs:
             filled += 1
         for m in MODALITIES:
-            r[f"label_{m}"] = labs[m] if labs else ""
+            # labs는 얻은 모달리티만 담고 있다(부분 성공 허용). 없는 것은 빈 값으로 둔다.
+            r[f"label_{m}"] = labs.get(m, "") if labs else ""
 
     if backup:
         shutil.copy2(manifest, manifest.with_suffix(manifest.suffix + ".bak"))
@@ -195,14 +211,20 @@ def main():
         if matched:
             print(f"    정답 대비 일치율:", end="")
             for m in MODALITIES:
+                # 그 모달리티 라벨이 있는 발화만 분모로 쓴다 — 없는 것까지 분모에 넣으면
+                # 일치율이 실제보다 낮게 나온다.
+                have = [r for r in matched if m in table[str(r["utt_id"])]]
+                if not have:
+                    print(f"  {m} -", end="")
+                    continue
                 agree = sum(
-                    1 for r in matched
+                    1 for r in have
                     if table[str(r["utt_id"])][m]
                     == normalize_label(str(r["label"]).strip().lower())
                 )
-                print(f"  {m} {100*agree/len(matched):.2f}%", end="")
+                print(f"  {m} {100*agree/len(have):.2f}%", end="")
             print()
-            dist = Counter(table[str(r["utt_id"])]["sound"] for r in matched)
+            dist = Counter(v["sound"] for v in (table[str(r["utt_id"])] for r in matched) if "sound" in v)
             top = ", ".join(f"{k} {100*v/len(matched):.1f}%" for k, v in dist.most_common(3))
             print(f"    소리 라벨 분포 상위: {top}")
         print()

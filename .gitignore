@@ -16,6 +16,11 @@ checkpoints_periodic/
 archived_runs/
 .DS_Store
 
+# 단, 임베딩 덤프는 예외의 예외 — 발화 11,464개 × 512차원 × 4종이라
+# .npz 약 90MB, Projector용 .tsv 약 50MB다. GitHub 파일당 한도가 100MB이고
+# extract_embeddings.py로 체크포인트에서 언제든 다시 뽑을 수 있으므로 넣지 않는다.
+results/embeddings/
+
 # results/ 는 예외 — 의도적으로 공유하는 산출물만 여기에 둔다:
 #   results/csv_summary/ : 학습 곡선(에폭별 지표) CSV
 #   results/eval/        : 평가 결과 JSON (test accuracy/F1/혼동행렬 + 재현에 필요한 config·checkpoint 경로)

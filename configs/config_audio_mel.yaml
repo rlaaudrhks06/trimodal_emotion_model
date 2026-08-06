@@ -1,0 +1,81 @@
+# 오디오 단독 베이스라인 **대조군** — config_audio_w2v.yaml과 백본만 다르고 나머지는 동일.
+#
+# 왜 필요한가: §8.7의 멜 오디오 단독 33.14%는 clip-independent 분할에서 측정한 값이라
+# 화자 독립 분할의 wav2vec2 결과와 직접 비교할 수 없다. 같은 분할·같은 seed·같은
+# 하이퍼파라미터에서 백본만 바꿔 돌려야 "차이가 wav2vec2 덕분"이라고 말할 수 있다.
+# (화자 누수 건에서 배운 것: 비교 조건이 흐려지면 결론을 신뢰할 수 없다.)
+#
+# 목적(11.0.1절): 세 모달리티 중 오디오만 사전학습 없이 처음부터 학습하고 있고
+# 단일 성능도 가장 낮았다(멜 기준 33.14%, 8.7절). 화자 독립 조건에서는 화자 개인화
+# 단서에 기댈 수 없으므로 모달리티 자체의 표현력이 더 중요해졌다 — 여기가 남은
+# 개선 여지 중 가장 크다고 판단해 먼저 검증한다.
+#
+# **트리모달 전체(7시간)를 건드리기 전에 오디오 단독으로 먼저 확인하는 실험이다.**
+# 비교 대상은 같은 화자 독립 분할에서 멜로 돌린 오디오 단독 베이스라인이며,
+# 8.7절의 33.14%는 분할 조건이 달라 직접 비교 대상이 아니다(별도로 재측정할 것).
+#
+# 모델 선택 근거: ASR 파인튜닝본(kresnik/wav2vec2-large-xlsr-korean 등)은 감정·화자
+# 정보를 지우도록 학습돼 SER에 오히려 불리하다는 보고가 있어(arXiv:2104.03502),
+# SSL만 거친 다국어 모델을 쓴다. 한국어는 XLSR-53의 53개 언어에 포함돼 있다.
+#
+# 층 선택: SER에서는 마지막 층보다 중간 층 표현이 낫다는 보고가 일관된다.
+# w2v_layer로 바꿔가며 비교할 것(24층 모델 기준 6/12/18 등). 기본 12는 중간.
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 7
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 12
+  visual_freeze_layers: 9
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  backbone: "mel"             # ← 이 파일에서 유일하게 다른 값
+  # (아래 wav2vec2 설정은 backbone: "mel"에서는 읽히지 않는다 — 대조를 위해 형태만 유지)
+  # HF 원본이 아니라 로컬 변환본을 가리킨다.
+  # 이유: transformers 최신 버전이 CVE-2025-32434 때문에 torch<2.6에서 .bin 로딩을
+  # 거부하는데, facebook/wav2vec2-* 계열은 safetensors를 제공하지 않는다. 서버 torch는
+  # 2.5.1+cu121이고 이를 올리면 cu121에 맞춰둔 학습 환경 전체가 위험해지므로,
+  # 가중치만 safetensors로 한 번 변환해서 쓴다(원본과 값이 완전히 동일함을 확인).
+  #   python scripts/convert_to_safetensors.py \
+  #       --repo facebook/wav2vec2-large-xlsr-53 --out models/wav2vec2-large-xlsr-53
+  pretrained_model: "models/wav2vec2-large-xlsr-53"
+  w2v_layer: 12               # 0=임베딩 출력, 1~24=트랜스포머 층, 음수도 가능(-1=마지막)
+  w2v_freeze: true            # 3.17억 파라미터 — v7 교훈대로 동결하고 특징 추출기로만 사용
+  sample_rate: 16000
+  n_mels: 80                  # wav2vec2 경로에선 안 쓰이지만 config 스키마 유지를 위해 남김
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  batch_size: 64              # wav2vec2 쪽과 동일하게 유지 — 배치 크기가 결과에 영향을 주지 않게
+  epochs: 40                  # 오디오 단독은 빨리 수렴 — 빠른 검증이 목적이라 상한을 낮게
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.0  # 단일 모달리티라 해당 없음
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+  # 화자 독립 분할(8.14/8.17절) 기준 — 이후 모든 실험의 기본
+  train_manifest: "data/manifests_si/train.csv"
+  val_manifest: "data/manifests_si/val.csv"
+  test_manifest: "data/manifests_si/test.csv"
+  prosody_stats_path: "data/prosody_stats_train_si.json"
+  checkpoint_dir: "checkpoints_baseline_audio_mel"
+  periodic_checkpoint_dir: "checkpoints_periodic_baseline_audio_mel"
+  checkpoint_interval: 5
+

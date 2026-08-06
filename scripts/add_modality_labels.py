@@ -139,12 +139,15 @@ def collect_labels(raw_dir: Path) -> dict[str, dict[str, str]]:
     return out
 
 
-def annotate(manifest: Path, table: dict[str, dict[str, str]], backup: bool) -> tuple[int, int]:
-    """매니페스트에 컬럼 3개를 붙여 제자리에서 다시 쓴다. 반환: (전체, 채워진 수)."""
+def annotate(manifest: Path, table: dict[str, dict[str, str]], backup: bool) -> tuple[int, int, bool]:
+    """매니페스트에 컬럼 3개를 붙여 제자리에서 다시 쓴다.
+
+    반환: (전체 행 수, 채워진 수, 이번에 백업을 새로 만들었는지)
+    """
     with open(manifest, encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     if not rows:
-        return 0, 0
+        return 0, 0, False
 
     fieldnames = [c for c in rows[0] if c not in NEW_COLUMNS] + NEW_COLUMNS
     filled = 0
@@ -156,8 +159,14 @@ def annotate(manifest: Path, table: dict[str, dict[str, str]], backup: bool) -> 
             # labs는 얻은 모달리티만 담고 있다(부분 성공 허용). 없는 것은 빈 값으로 둔다.
             r[f"label_{m}"] = labs.get(m, "") if labs else ""
 
-    if backup:
-        shutil.copy2(manifest, manifest.with_suffix(manifest.suffix + ".bak"))
+    # **이미 .bak이 있으면 덮지 않는다.** 이 스크립트는 재실행이 잦은데(라벨 규칙을 고쳐
+    # 다시 채우는 등), 매번 덮으면 두 번째 실행에서 .bak이 "보조 컬럼이 이미 붙은 버전"으로
+    # 바뀌어 **원본 백업이 사라진다**. 백업의 목적은 최초 원본을 지키는 것이므로 첫 것만 남긴다.
+    bak = manifest.with_suffix(manifest.suffix + ".bak")
+    made_backup = False
+    if backup and not bak.exists():
+        shutil.copy2(manifest, bak)
+        made_backup = True
     # 임시 파일에 먼저 쓰고 원자적으로 교체 — 중간에 죽어도 원본이 반쯤 덮이지 않는다.
     tmp = manifest.with_suffix(manifest.suffix + ".tmp")
     with open(tmp, "w", newline="", encoding="utf-8") as f:
@@ -165,7 +174,7 @@ def annotate(manifest: Path, table: dict[str, dict[str, str]], backup: bool) -> 
         w.writeheader()
         w.writerows(rows)
     tmp.replace(manifest)
-    return len(rows), filled
+    return len(rows), filled, made_backup
 
 
 def main():
@@ -202,9 +211,14 @@ def main():
                 raise SystemExit("[add_labels] 중단 — --dry-run으로 먼저 확인하세요")
 
         if not args.dry_run:
-            n, filled = annotate(mf, table, backup=not args.no_backup)
-            print(f"    -> 컬럼 {NEW_COLUMNS} 추가, {filled:,}/{n:,}건 채움"
-                  f"{' (.bak 백업 생성)' if not args.no_backup else ''}")
+            n, filled, made = annotate(mf, table, backup=not args.no_backup)
+            if made:
+                note = " (.bak 백업 생성)"
+            elif args.no_backup:
+                note = ""
+            else:
+                note = f" (.bak 이미 있음 — 최초 원본 유지)"
+            print(f"    -> 컬럼 {NEW_COLUMNS} 추가, {filled:,}/{n:,}건 채움{note}")
 
         # 정답(multimodal)과 각 모달리티 라벨의 일치율 — v12 설계의 근거 수치다.
         matched = [r for r in rows if str(r["utt_id"]) in table]

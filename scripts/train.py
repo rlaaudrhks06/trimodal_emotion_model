@@ -32,7 +32,7 @@ if THROTTLE_CPU:
 
 from src.config import load_config
 from src.model import TrimodalEmotionModel
-from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
+from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn, IGNORE_INDEX
 from src.datasets.labels import EMOTION_LABELS, LABEL_TO_IDX, normalize_label
 
 
@@ -81,11 +81,44 @@ def compute_class_weights(train_ds: ManifestEmotionDataset, device: torch.device
     return weights.to(device)
 
 
-def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "") -> dict:
+def aux_loss(aux_logits: dict, batch: dict, loss_fn) -> torch.Tensor | None:
+    """v12 보조 손실. 유효한 보조 라벨이 하나도 없으면 None을 돌려준다.
+
+    **nan 방어가 이 함수의 존재 이유다.** 보조 라벨이 없는 표본은 IGNORE_INDEX(-100)로
+    들어오고 CrossEntropyLoss가 알아서 건너뛰는데, **배치 전체가 무시 대상이면 0으로
+    나누게 되어 nan이 나온다**(실측 확인). nan은 역전파를 타고 전 가중치를 파괴하는데
+    로그에는 loss=nan만 뜨고 원인이 안 보인다. 그래서 유효 표본 수를 먼저 세고,
+    0이면 그 항을 아예 빼버린다.
+
+    커버리지가 99.8%라 실사용에서 배치 전체가 비는 일은 거의 없지만, 보조 라벨이
+    희박한 매니페스트를 쓰면 조용히 터지므로 막아둔다.
+    """
+    terms = []
+    for key, logits in aux_logits.items():
+        target = batch.get(key)
+        if target is None:
+            continue
+        if (target != IGNORE_INDEX).sum() == 0:
+            continue  # 이 배치엔 이 모달리티의 유효 라벨이 하나도 없음 -> 항 제외
+        terms.append(loss_fn(logits, target))
+    return torch.stack(terms).sum() if terms else None
+
+
+def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "",
+              aux_loss_fn=None, aux_weight: float = 0.0) -> dict:
+    """aux_loss_fn과 aux_weight를 주면 v12 보조 손실을 함께 학습한다.
+
+    둘 중 하나라도 없으면(기본) 보조 경로를 아예 타지 않아 v1~v11과 완전히 동일하다.
+    검증(is_train=False) 시에는 보조 손실을 빼고 주 손실만 본다 — 체크포인트 선택과
+    학습률 스케줄이 보조 과제 성적에 흔들리면 안 되기 때문이다.
+    """
     is_train = optimizer is not None
+    use_aux = is_train and aux_loss_fn is not None and aux_weight > 0
+
     model.train() if is_train else model.eval()
 
     total_loss, all_preds, all_labels = 0.0, [], []
+    aux_sum, aux_batches = 0.0, 0
 
     # 배치 몇 %까지 왔는지 실시간으로 보여준다 — 몇 시간짜리 에폭을 ps/nvidia-smi로만
     # 간접 확인해야 했던 문제 때문에 추가함. nohup으로 리다이렉트해도 바로 보이도록
@@ -112,8 +145,20 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "
             if "waveform" in batch:
                 model_inputs["waveform"] = batch["waveform"]
                 model_inputs["wav_attention_mask"] = batch["wav_attention_mask"]
-            logits = model(**model_inputs)
-            loss = loss_fn(logits, batch["labels"])
+            if use_aux:
+                logits, aux_logits = model(**model_inputs, return_aux=True)
+            else:
+                logits = model(**model_inputs)
+                aux_logits = {}
+            main_loss = loss_fn(logits, batch["labels"])
+            loss = main_loss
+
+            if aux_logits:
+                a = aux_loss(aux_logits, batch, aux_loss_fn)
+                if a is not None:
+                    loss = main_loss + aux_weight * a
+                    aux_sum += a.item()
+                    aux_batches += 1
 
             if is_train:
                 optimizer.zero_grad()
@@ -125,7 +170,10 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
 
-            total_loss += loss.item() * logits.size(0)
+            # 역전파는 loss(주+보조)로 하되, 기록·로그는 **주 손실만** 쌓는다.
+            # 보조 항까지 섞으면 로그의 train_loss가 v1~v11과 비교 불가능해지고,
+            # 보조 가중치를 바꿀 때마다 값이 튀어 곡선 해석이 어려워진다.
+            total_loss += main_loss.item() * logits.size(0)
             all_preds.extend(logits.argmax(dim=-1).cpu().tolist())
             all_labels.extend(batch["labels"].cpu().tolist())
 
@@ -139,11 +187,17 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "
                     flush=True,
                 )
 
-    return {
+    out = {
         "loss": total_loss / len(all_labels),
         "accuracy": accuracy_score(all_labels, all_preds),
         "weighted_f1": f1_score(all_labels, all_preds, average="weighted", zero_division=0),
     }
+    if aux_batches:
+        # 보조 손실이 실제로 몇 배치에 걸렸는지도 함께 낸다. 라벨 결측이 많으면
+        # 이 수가 전체 배치 수보다 훨씬 작게 나와 바로 눈에 띈다.
+        out["aux_loss"] = aux_sum / aux_batches
+        out["aux_batches"] = aux_batches
+    return out
 
 
 def main():
@@ -216,6 +270,28 @@ def main():
     train_loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
     eval_loss_fn = torch.nn.CrossEntropyLoss()
 
+    # v12 보조 손실(11.2절). aux_weight가 0(기본)이면 보조 경로를 아예 타지 않아
+    # v1~v11과 완전히 동일하게 동작한다.
+    #
+    # 보조 손실에는 클래스 가중치를 걸지 않는다: 가중치는 train 세트의 **주 라벨** 분포에서
+    # 계산한 것이라 모달리티별 라벨 분포와 다르다(예: 소리 라벨은 혐오 28.3%로 분포가 또 다름).
+    # 맞지 않는 가중치를 걸면 보조 과제가 왜곡된다. label_smoothing은 주 손실과 맞춘다.
+    aux_weight = float(train_cfg.get("aux_loss_weight", 0.0))
+    aux_loss_fn = None
+    if aux_weight > 0:
+        if not model.use_aux:
+            raise ValueError(
+                "train.aux_loss_weight > 0인데 model.aux_head_dim이 0이라 보조 헤드가 없다 — "
+                "config에서 model.aux_head_dim을 설정할 것"
+            )
+        if not train_ds.aux_columns:
+            raise ValueError(
+                f"train.aux_loss_weight > 0인데 {train_cfg['train_manifest']}에 보조 라벨 컬럼이 없다 — "
+                "먼저 scripts/add_modality_labels.py를 돌릴 것"
+            )
+        aux_loss_fn = torch.nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+        print(f"[train] 보조 손실 활성 — 가중치 {aux_weight}, 컬럼 {list(train_ds.aux_columns)}", flush=True)
+
     # 과적합 대응: val_loss가 개선되지 않으면 학습률을 낮춰서 이미 찾은 좋은 지점 근처에서
     # 더 조심스럽게(과적합 덜 일으키며) 탐색하게 한다. 최근 학습에서 val_loss가 계속
     # 올라가기만 하는 패턴이 관찰되어 추가.
@@ -238,7 +314,9 @@ def main():
     best_val_acc = 0.0
 
     for epoch in range(1, train_cfg["epochs"] + 1):
-        train_metrics = run_epoch(model, train_loader, device, train_loss_fn, optimizer, log_label=f"epoch {epoch:03d} train")
+        train_metrics = run_epoch(model, train_loader, device, train_loss_fn, optimizer,
+                                  log_label=f"epoch {epoch:03d} train",
+                                  aux_loss_fn=aux_loss_fn, aux_weight=aux_weight)
         val_metrics = run_epoch(model, val_loader, device, eval_loss_fn, optimizer=None, log_label=f"epoch {epoch:03d} val")
 
         # param_groups[1]이 기존 모든 버전과 동일한 "메인" lr(크로스어텐션/분류기/프론트엔드) —
@@ -257,6 +335,12 @@ def main():
             f"lr={cur_lr:.2e} bert_lr={cur_bert_lr:.2e}",
             flush=True,
         )
+        if "aux_loss" in train_metrics:
+            # 보조 손실은 별도 줄로 낸다 — parse_training_log.py의 에폭 요약 정규식이
+            # 위 줄의 형식에 맞춰져 있어서, 같은 줄에 끼워 넣으면 v1~v11 CSV와
+            # 호환이 깨진다(정규식은 뒤 텍스트를 무시하지만 lr 앞에 끼면 매칭 실패).
+            print(f"  -> 보조손실={train_metrics['aux_loss']:.4f} "
+                  f"(적용 배치 {train_metrics['aux_batches']}/{len(train_loader)})", flush=True)
         if cur_lr < prev_lr:
             print(f"  -> val_loss 정체로 학습률 감소: {prev_lr:.2e} -> {cur_lr:.2e} (bert: {prev_bert_lr:.2e} -> {cur_bert_lr:.2e})", flush=True)
 

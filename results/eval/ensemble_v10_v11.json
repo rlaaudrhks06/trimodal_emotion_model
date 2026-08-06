@@ -1,0 +1,140 @@
+{
+  "name": "ensemble_v10_v11",
+  "evaluated_at": "2026-08-07T00:04:07+09:00",
+  "hostname": "REDACTED",
+  "manifest": "data/manifests_si/test.csv",
+  "models": [
+    {
+      "config": "configs/config_speaker_independent.yaml",
+      "checkpoint": "archived_runs/checkpoint_v10_best/best_model.pt"
+    },
+    {
+      "config": "configs/config_si_w2v.yaml",
+      "checkpoint": "archived_runs/checkpoint_v11_best/best_model.pt"
+    }
+  ],
+  "accuracy": 0.463712,
+  "weighted_f1": 0.45901,
+  "macro_f1": 0.421478,
+  "n_samples": 11464,
+  "labels": [
+    "angry",
+    "disgust",
+    "fear",
+    "happy",
+    "sad",
+    "surprise",
+    "neutral"
+  ],
+  "confusion_matrix": [
+    [
+      448,
+      325,
+      25,
+      42,
+      25,
+      71,
+      27
+    ],
+    [
+      356,
+      1297,
+      235,
+      334,
+      331,
+      322,
+      220
+    ],
+    [
+      27,
+      162,
+      165,
+      61,
+      100,
+      99,
+      65
+    ],
+    [
+      37,
+      224,
+      63,
+      1714,
+      82,
+      158,
+      187
+    ],
+    [
+      32,
+      295,
+      150,
+      121,
+      399,
+      72,
+      110
+    ],
+    [
+      60,
+      191,
+      110,
+      216,
+      43,
+      871,
+      109
+    ],
+    [
+      22,
+      243,
+      86,
+      386,
+      129,
+      195,
+      422
+    ]
+  ],
+  "per_class": {
+    "angry": {
+      "precision": 0.45621181262729127,
+      "recall": 0.4652128764278297,
+      "f1-score": 0.46066838046272496,
+      "support": 963.0
+    },
+    "disgust": {
+      "precision": 0.47387650712458895,
+      "recall": 0.41906300484652664,
+      "f1-score": 0.4447873799725652,
+      "support": 3095.0
+    },
+    "fear": {
+      "precision": 0.19784172661870503,
+      "recall": 0.24300441826215022,
+      "f1-score": 0.21810971579643093,
+      "support": 679.0
+    },
+    "happy": {
+      "precision": 0.5963813500347948,
+      "recall": 0.6953346855983773,
+      "f1-score": 0.6420678029593557,
+      "support": 2465.0
+    },
+    "sad": {
+      "precision": 0.35978358881875566,
+      "recall": 0.3384223918575064,
+      "f1-score": 0.3487762237762238,
+      "support": 1179.0
+    },
+    "surprise": {
+      "precision": 0.48713646532438476,
+      "recall": 0.544375,
+      "f1-score": 0.5141676505312869,
+      "support": 1600.0
+    },
+    "neutral": {
+      "precision": 0.3701754385964912,
+      "recall": 0.28455832771409306,
+      "f1-score": 0.3217689668318719,
+      "support": 1483.0
+    }
+  },
+  "ensemble_size": 2,
+  "method": "softmax 확률 산술평균"
+}

@@ -78,7 +78,10 @@ def main():
 
     # v1~v4(트리모달 실험)와 안 겹치게 이름 분리 — archived_runs로 옮길 때도
     # baseline_{modality}_best 식으로, checkpoint_v{N}_* 규칙과 구분되게 유지할 것.
-    ckpt_dir = Path(f"checkpoints_baseline_{args.modality}")
+    # config의 checkpoint_dir를 우선 쓴다. 예전엔 이 경로를 하드코딩해서, 같은 모달리티의
+    # 서로 다른 실험(오디오 멜 vs wav2vec2)이 같은 폴더에 저장되어 **나중 실행이 앞 실행의
+    # 체크포인트를 조용히 덮어썼다.** config에 지정이 없을 때만 예전 규칙으로 폴백한다.
+    ckpt_dir = Path(train_cfg.get("checkpoint_dir") or f"checkpoints_baseline_{args.modality}")
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     epochs = args.epochs or train_cfg["epochs"]

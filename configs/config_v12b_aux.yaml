@@ -1,4 +1,4 @@
-# 모달리티별 보조 라벨 학습 (v12) — config_si_w2v.yaml(v11)에서 보조 손실만 추가.
+# 모달리티별 보조 라벨 학습 (v12b) — config_v12a_layer24.yaml에서 보조 손실만 추가.
 #
 # **왜 이걸 하는가 (11.2절)**
 #
@@ -24,7 +24,7 @@
 # 근거: Caruana(1997) 이래 표준인 다중 과제 학습 — 보조 과제가 공유 표현에 추가 제약을
 # 걸어 일반화를 돕는다.
 #
-# **v11에서 바뀌는 것은 아래 두 줄뿐이다**(model.aux_head_dim, train.aux_loss_weight).
+# **v12a에서 바뀌는 것은 아래 두 줄뿐이다**(model.aux_head_dim, train.aux_loss_weight).
 # 나머지는 전부 동일하게 두어 "보조 학습" 효과만 분리해서 본다.
 model:
   d_model: 256
@@ -55,11 +55,19 @@ text:
 audio:
   backbone: "wav2vec2"
   pretrained_model: "models/wav2vec2-large-xlsr-53"
-  # 12층 유지. 층 스윕(val 4,000개, 층 7개, 5회 반복)에서 층 간 최대 차이 2.18%p가
-  # 반복 간 표준편차 0.92%p의 2배를 넘지 못해 유의하지 않았다 — 층은 병목이 아니다.
-  # 참고로 그 실험의 부수 발견: 평균 풀링한 특징의 상승폭이 +3.75%p인데 학습된 오디오
-  # 단독 모델은 +12.48%p(3.3배)였다. 감정이 시간 평균이 아니라 시간적 변화에 있다는 뜻.
-  w2v_layer: 12
+  # v12a와 같은 24층을 쓴다. 층 스윕 재측정(val 전체 11,443개, max_iter=5000, 5회 반복)에서
+  #     0층 +7.54  4층 +6.20  8층 +6.90  12층 +5.70  16층 +6.83  20층 +7.24  24층 +8.39 (%p)
+  # 로 24층이 12층보다 +2.69%p 높았고, 반복 간 표준편차(0.81%p)의 2배를 넘어 유의했다.
+  #
+  # **왜 12층이 아니라 24층인가**: 이 실험의 목적은 보조 학습의 효과를 재는 것인데,
+  # 12층에서 재면 "가장 나쁜 층에서의 보조 효과"를 재게 된다. 실제로 배포할 모델은
+  # 24층을 쓸 것이므로 그 조건에서 재야 의미가 있다.
+  #
+  # 비교 구조:
+  #     v11 (12층, 보조X)  ->  v12a (24층, 보조X)   : 층 효과
+  #     v12a (24층, 보조X) ->  v12b (24층, 보조O)   : 보조 효과
+  # 두 비교 모두 변수가 하나씩이다. **v12a를 먼저 돌려야 이 실험의 대조군이 생긴다.**
+  w2v_layer: 24
   w2v_freeze: true
   sample_rate: 16000
   n_mels: 80
@@ -101,8 +109,8 @@ train:
   test_manifest: "data/manifests_si/test.csv"
   prosody_stats_path: "data/prosody_stats_train_si.json"
 
-  checkpoint_dir: "checkpoints_v12_aux"
-  periodic_checkpoint_dir: "checkpoints_periodic_v12_aux"
+  checkpoint_dir: "checkpoints_v12b_aux"
+  periodic_checkpoint_dir: "checkpoints_periodic_v12b_aux"
   # v11이 9에폭에서 정점이었고 이후 val_loss가 5에폭 연속 올랐다. 보조 학습이 과적합을
   # 늦추면 정점이 뒤로 밀릴 수 있으므로 10으로 좁혀 그 구간 스냅샷을 확보한다.
   # 체크포인트 1개가 1.63GB라 40에폭이면 스냅샷 4개(6.5GB).

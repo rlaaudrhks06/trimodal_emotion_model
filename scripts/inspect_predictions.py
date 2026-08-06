@@ -64,6 +64,10 @@ def main():
         raise ValueError("--pairs는 'config checkpoint' 짝으로 짝수 개여야 함")
     combos = list(zip(args.pairs[0::2], args.pairs[1::2]))
 
+    # 하나라도 wav2vec2 백본이면 파형을 실어야 한다 — first_cfg만 보면
+    # mel 모델이 앞에 올 때 w2v 모델이 파형을 못 받아 크래시한다.
+    any_needs_wav = any(load_config(Path(c)).audio_backbone == "wav2vec2" for c, _ in combos)
+
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
 
     first_cfg = load_config(Path(combos[0][0]))
@@ -76,7 +80,7 @@ def main():
         args.manifest, first_cfg,
         cache_dir=train_cfg.get("feature_cache_dir"),
         prosody_stats_path=train_cfg.get("prosody_stats_path"),
-        return_waveform=(first_cfg.audio_backbone == "wav2vec2"),
+        return_waveform=any_needs_wav,
     )
     loader = DataLoader(ds, batch_size=train_cfg["batch_size"], shuffle=False, collate_fn=collate_fn,
                         num_workers=train_cfg.get("num_workers", 0), pin_memory=(device.type == "cuda"))

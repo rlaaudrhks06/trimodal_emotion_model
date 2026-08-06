@@ -78,4 +78,8 @@ train:
 
   checkpoint_dir: "checkpoints_si_w2v"
   periodic_checkpoint_dir: "checkpoints_periodic_si_w2v"
-  checkpoint_interval: 5
+  # 20으로 둔 이유: 파라미터가 4.37억으로 늘어 체크포인트 1개가 1.63GB다(v10은 0.45GB).
+  # 5에폭 간격이면 40에폭에 스냅샷만 13GB이고, 그중 10.6GB는 매번 똑같이 저장되는
+  # 동결 wav2vec2 가중치다. 스냅샷의 원래 용도였던 SWA는 두 차례 시도 끝에 효과 없음으로
+  # 결론났고(8.15.3절) 그 외 용도는 v6에서 한 번 썼을 뿐이라, 간격을 넓혀 낭비를 줄인다.
+  checkpoint_interval: 20

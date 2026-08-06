@@ -22,6 +22,7 @@ test로 고르면 test가 오염되어 최종 성능 보고가 의미를 잃는�
 """
 import argparse
 import sys
+import warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -29,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 import soundfile as sf
 import torch
+from sklearn.exceptions import ConvergenceWarning
 from torch.utils.data import Dataset, DataLoader
 
 from src.config import load_config
@@ -171,10 +173,16 @@ def main():
     print(f"{'층':>4} {'정확도':>9} {'±표준편차':>10} {'우연':>9} {'상승폭':>10}   현재 설정")
     print("─" * 62)
     means, stds = {}, {}
+    n_not_converged = 0
     for l in layers:
         accs, chances = [], []
         for r in range(args.repeats):
-            a, c, _ = probe(feats[l], y, args.seed + r, args.max_iter)
+            # 수렴 실패를 세어둔다. 덜 학습된 프로브로 채점하면 층 간 차이가
+            # 실제보다 눌려 보이는데, 경고가 로그에 묻히면 그 사실을 알 수 없다.
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", ConvergenceWarning)
+                a, c, _ = probe(feats[l], y, args.seed + r, args.max_iter)
+            n_not_converged += sum(issubclass(w.category, ConvergenceWarning) for w in caught)
             accs.append(a); chances.append(c)
         acc, sd, chance = float(np.mean(accs)), float(np.std(accs)), float(np.mean(chances))
         means[l], stds[l] = acc - chance, sd
@@ -182,7 +190,12 @@ def main():
         print(f"{l:>4} {100*acc:>8.2f}% {100*sd:>9.2f}%p {100*chance:>8.2f}% "
               f"{100*(acc-chance):>+9.2f}%p{mark}")
     print("─" * 62)
+    total_fits = len(layers) * args.repeats
     print(f"({args.repeats}회 반복 평균. 프로브 평가셋 약 {int(0.3*len(y)):,}개)")
+    if n_not_converged:
+        print(f"⚠ 프로브 {total_fits}회 중 {n_not_converged}회가 max_iter={args.max_iter} 안에 수렴하지 못했다.")
+        print("  덜 학습된 프로브는 층 간 차이를 실제보다 작게 만든다 — 아래 결론이")
+        print(f"  '차이 없음'이면 --max-iter를 늘려(예: {args.max_iter*3}) 한 번 더 확인할 것.")
     print()
 
     best = max(means, key=means.get)

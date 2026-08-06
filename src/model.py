@@ -57,6 +57,36 @@ class TrimodalEmotionModel(nn.Module):
         self.prosody_gate = ProsodyGatedFusion(hybrid_dim=hybrid_dim, prosody_dim=m.prosody_dim)
         self.classifier = HybridClassifier(hybrid_dim=hybrid_dim, num_classes=m.num_classes, dropout=m.classifier_dropout)
 
+        # v12 보조 헤드(11.2절). 각 브랜치가 "자기 입력에 답이 있는" 과제를 함께 풀게 한다.
+        #
+        # 왜 필요한가: AI Hub 정답(multimodal) 라벨과 각 모달리티 라벨의 일치율이
+        # 소리 77.35% / 영상 41.69% / 텍스트 30.87%다. 지금은 세 브랜치 모두 정답 하나를
+        # 맞히도록 학습하는데, 영상 브랜치는 화면이 58% 반박하는 답을 내놓아야 하므로
+        # 배울 근거가 없다. 남는 방법은 촬영 맥락 암기뿐이고, 실제로 프로빙에서 세 브랜치
+        # 모두 감정보다 화자/촬영분 정보를 약 3배 더 담고 있었다.
+        #
+        # **입력은 융합 이전의 모달리티별 표현이어야 한다.** 융합 뒤 표현에 헤드를 달면
+        # 이미 세 모달리티가 섞여 있어서 "그 브랜치만의 정보"를 평가하는 게 아니게 된다.
+        #
+        # aux_head_dim=0(기본)이면 헤드를 아예 만들지 않아 v1~v11과 파라미터까지 동일하다.
+        self.use_aux = m.aux_head_dim > 0
+        if self.use_aux:
+            def head(in_dim: int) -> nn.Sequential:
+                return nn.Sequential(
+                    nn.Linear(in_dim, m.aux_head_dim),
+                    nn.GELU(),
+                    nn.Dropout(m.classifier_dropout),
+                    nn.Linear(m.aux_head_dim, m.num_classes),
+                )
+            # 세 헤드 모두 **융합 이전** 표현 mean(X_*) [d_model]을 받는다. 대칭이다.
+            #
+            # 오디오에 운율(prosody)을 같이 넣지 않는 이유: 운율은 백본을 거치지 않는
+            # 별도 수제 특징이라, 넣으면 헤드가 백본 대신 운율에 기대어 정답을 맞힐 수 있다.
+            # 이 보조 손실의 목적은 **백본 자체를 더 좋게 만드는 것**이므로 백본 출력만 준다.
+            self.aux_visual_head = head(m.d_model)
+            self.aux_audio_head = head(m.d_model)
+            self.aux_text_head = head(m.d_model)
+
     def _maybe_drop_modalities(self, mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform=None):
         """설계 v3 §9 강건성: 학습 시 모달리티 드롭아웃.
 
@@ -106,7 +136,13 @@ class TrimodalEmotionModel(nn.Module):
         visual_padding_mask: torch.Tensor | None = None,  # [B, T_v] True=패딩
         waveform: torch.Tensor | None = None,             # wav2vec2 백본일 때만 사용
         wav_attention_mask: torch.Tensor | None = None,   # [B, T_samples] 1=유효
-    ) -> torch.Tensor:
+        return_aux: bool = False,                         # v12 보조 헤드 출력도 받을지
+    ):
+        """return_aux=False(기본)면 로짓 텐서 하나만 돌려준다 — v1~v11 호출부가 그대로 동작.
+
+        True면 (logits, {"aux_visual": ..., "aux_audio": ..., "aux_text": ...})를 준다.
+        보조 헤드가 없는 설정(aux_head_dim=0)에서 True를 주면 빈 dict가 함께 온다.
+        """
         mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform = self._maybe_drop_modalities(
             mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform
         )
@@ -135,11 +171,27 @@ class TrimodalEmotionModel(nn.Module):
             v_mask=visual_padding_mask, a_mask=audio_padding_mask, t_mask=t_key_padding_mask,
         )
 
+        # 융합 이전의 모달리티별 평균 표현. 하이브리드 결합에도 쓰이고, v12 보조 헤드의
+        # 입력이기도 하다 — 보조 헤드는 반드시 융합 전 표현을 봐야 "그 브랜치만의 정보"를
+        # 평가하는 것이 된다(융합 뒤엔 세 모달리티가 이미 섞여 있다).
+        v_pool = mean_pool(x_v, visual_padding_mask)
+        t_pool = mean_pool(x_t, t_key_padding_mask)
+        a_pool = mean_pool(x_a, audio_padding_mask)
+
         # 하이브리드 결합: 교차 어텐션(미세 타이밍) + 단일 모달리티 평균(거시 분위기)
-        z_v_final = torch.cat([z_cross_v, mean_pool(x_v, visual_padding_mask)], dim=-1)
-        z_t_final = torch.cat([z_cross_t, mean_pool(x_t, t_key_padding_mask)], dim=-1)
-        z_audio_hybrid = torch.cat([z_cross_a, mean_pool(x_a, audio_padding_mask)], dim=-1)
+        z_v_final = torch.cat([z_cross_v, v_pool], dim=-1)
+        z_t_final = torch.cat([z_cross_t, t_pool], dim=-1)
+        z_audio_hybrid = torch.cat([z_cross_a, a_pool], dim=-1)
         z_audio_final = self.prosody_gate(z_audio_hybrid, prosody_vec)
 
         logits = self.classifier(z_v_final, z_audio_final, z_t_final)
-        return logits
+        if not return_aux:
+            return logits
+        aux = {}
+        if self.use_aux:
+            aux = {
+                "aux_visual": self.aux_visual_head(v_pool),
+                "aux_audio": self.aux_audio_head(a_pool),
+                "aux_text": self.aux_text_head(t_pool),
+            }
+        return logits, aux

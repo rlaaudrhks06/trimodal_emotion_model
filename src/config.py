@@ -25,6 +25,9 @@ class ModelConfig:
     text_dropout: float = 0.1           # BERT hidden/attention dropout override
     text_freeze_layers: int = 0         # BERT 하위 N개 encoder layer(+embeddings) 동결
     visual_freeze_layers: int = 9       # 0보다 크면 MobileFaceNet 백본 전체 동결, 0이면 미세조정(8.7~8.8절 대응)
+    # v12 보조 헤드(11.2절)의 은닉 차원. 0(기본)이면 헤드를 아예 만들지 않아
+    # v1~v11과 파라미터 수까지 완전히 동일하다. 보조 라벨 학습을 켤 때만 값을 준다.
+    aux_head_dim: int = 0
 
 
 @dataclass

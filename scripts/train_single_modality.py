@@ -40,8 +40,14 @@ def main():
     cache_dir = train_cfg.get("feature_cache_dir")
     prosody_stats_path = train_cfg.get("prosody_stats_path")
     collate_fn = make_collate_fn(cfg.text_pretrained)
-    train_ds = ManifestEmotionDataset(train_cfg["train_manifest"], cfg, cache_dir=cache_dir, prosody_stats_path=prosody_stats_path)
-    val_ds = ManifestEmotionDataset(train_cfg["val_manifest"], cfg, cache_dir=cache_dir, prosody_stats_path=prosody_stats_path)
+    # wav2vec2 백본은 멜이 아니라 원본 파형을 받으므로 데이터셋에 파형도 요청한다.
+    need_wav = args.modality == "audio" and cfg.audio_backbone == "wav2vec2"
+    ds_kwargs = dict(cache_dir=cache_dir, prosody_stats_path=prosody_stats_path, return_waveform=need_wav)
+    train_ds = ManifestEmotionDataset(train_cfg["train_manifest"], cfg, **ds_kwargs)
+    val_ds = ManifestEmotionDataset(train_cfg["val_manifest"], cfg, **ds_kwargs)
+    if need_wav:
+        print(f"[train_single_modality:audio] wav2vec2 백본 사용 — {cfg.audio_pretrained} "
+              f"layer={cfg.audio_w2v_layer} freeze={cfg.audio_w2v_freeze}", flush=True)
 
     num_workers = train_cfg.get("num_workers", 0)
     loader_kwargs = dict(

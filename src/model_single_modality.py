@@ -13,6 +13,7 @@ import torch.nn as nn
 
 from .config import Config
 from .models.audio_backbone import AudioBackbone
+from .models.audio_backbone_w2v import Wav2Vec2AudioBackbone
 from .models.visual_backbone import VisualBackbone
 from .models.text_backbone import TextBackbone
 from .fusion.hierarchical_fusion import mean_pool
@@ -27,10 +28,18 @@ class SingleModalityModel(nn.Module):
         m = cfg.model
 
         if modality == "audio":
-            self.backbone = AudioBackbone(
-                n_mels=cfg.audio_n_mels, d_model=m.d_model, n_heads=m.n_heads,
-                ffn_dim=m.ffn_dim, n_layers=m.backbone_layers, dropout=m.backbone_dropout,
-            )
+            self.use_w2v = cfg.audio_backbone == "wav2vec2"
+            if self.use_w2v:
+                self.backbone = Wav2Vec2AudioBackbone(
+                    pretrained_model=cfg.audio_pretrained, d_model=m.d_model, n_heads=m.n_heads,
+                    ffn_dim=m.ffn_dim, n_layers=m.backbone_layers, layer=cfg.audio_w2v_layer,
+                    dropout=m.backbone_dropout, freeze=cfg.audio_w2v_freeze,
+                )
+            else:
+                self.backbone = AudioBackbone(
+                    n_mels=cfg.audio_n_mels, d_model=m.d_model, n_heads=m.n_heads,
+                    ffn_dim=m.ffn_dim, n_layers=m.backbone_layers, dropout=m.backbone_dropout,
+                )
             self.prosody_proj = nn.Linear(m.prosody_dim, m.d_model)
             feat_dim = m.d_model * 2  # mean(X_a) + prosody
         elif modality == "visual":
@@ -62,12 +71,27 @@ class SingleModalityModel(nn.Module):
         attention_mask: torch.Tensor | None = None,
         audio_padding_mask: torch.Tensor | None = None,
         visual_padding_mask: torch.Tensor | None = None,
+        waveform: torch.Tensor | None = None,
+        wav_attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # train.py의 run_epoch()가 트리모달 모델과 동일한 키워드 인자로 호출하므로
         # (필요없는 나머지 모달리티 텐서는 그냥 무시) run_epoch/평가 로직을 그대로 재사용할 수 있다.
         if self.modality == "audio":
-            x_a = self.backbone(mel_spec, key_padding_mask=audio_padding_mask)
-            pooled = mean_pool(x_a, audio_padding_mask)
+            if self.use_w2v:
+                if waveform is None:
+                    raise ValueError(
+                        "wav2vec2 백본은 원본 파형이 필요하다 — "
+                        "ManifestEmotionDataset(return_waveform=True)로 만들었는지 확인할 것"
+                    )
+                # wav2vec2는 파형을 자체 stride로 줄이므로 멜 기준 audio_padding_mask를
+                # 쓸 수 없다. 프레임 마스크는 스트라이드를 아는 백본이 만들어준다.
+                x_a = self.backbone(waveform, wav_attention_mask=wav_attention_mask)
+                a_mask = (self.backbone.frame_padding_mask(wav_attention_mask, x_a.size(1))
+                          if wav_attention_mask is not None else None)
+            else:
+                x_a = self.backbone(mel_spec, key_padding_mask=audio_padding_mask)
+                a_mask = audio_padding_mask
+            pooled = mean_pool(x_a, a_mask)
             feat = torch.cat([pooled, self.prosody_proj(prosody_vec)], dim=-1)
         elif self.modality == "visual":
             x_v = self.backbone(frames, key_padding_mask=visual_padding_mask)

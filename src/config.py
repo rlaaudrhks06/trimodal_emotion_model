@@ -31,6 +31,12 @@ class ModelConfig:
 class Config:
     model: ModelConfig
     text_pretrained: str
+    # 오디오 백본 선택(11.0.1절): "mel"=기존 멜스펙트로그램+자체학습 프론트엔드,
+    # "wav2vec2"=사전학습 SSL 모델에서 특징 추출. wav2vec2일 때만 아래 세 필드를 쓴다.
+    audio_backbone: str
+    audio_pretrained: str
+    audio_w2v_layer: int
+    audio_w2v_freeze: bool
     audio_sample_rate: int
     audio_n_mels: int
     audio_n_fft: int
@@ -45,10 +51,15 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         raw = yaml.safe_load(f)
 
     model_cfg = ModelConfig(**raw["model"])
+    audio_raw = raw["audio"]
     return Config(
         model=model_cfg,
         text_pretrained=raw["text"]["pretrained_model"],
-        audio_sample_rate=raw["audio"]["sample_rate"],
+        audio_backbone=audio_raw.get("backbone", "mel"),
+        audio_pretrained=audio_raw.get("pretrained_model", "facebook/wav2vec2-large-xlsr-53"),
+        audio_w2v_layer=audio_raw.get("w2v_layer", 12),
+        audio_w2v_freeze=audio_raw.get("w2v_freeze", True),
+        audio_sample_rate=audio_raw["sample_rate"],
         audio_n_mels=raw["audio"]["n_mels"],
         audio_n_fft=raw["audio"]["n_fft"],
         audio_hop_length=raw["audio"]["hop_length"],

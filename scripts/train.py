@@ -97,7 +97,7 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "
     with torch.set_grad_enabled(is_train):
         for batch_idx, batch in enumerate(loader, 1):
             batch = move_batch_to_device(batch, device)
-            logits = model(
+            model_inputs = dict(
                 mel_spec=batch["mel_spec"],
                 prosody_vec=batch["prosody_vec"],
                 frames=batch["frames"],
@@ -106,6 +106,13 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "
                 audio_padding_mask=batch["audio_padding_mask"],
                 visual_padding_mask=batch["visual_padding_mask"],
             )
+            # wav2vec2 오디오 백본을 쓸 때만 배치에 원본 파형이 들어있다
+            # (ManifestEmotionDataset(return_waveform=True)). 없으면 그대로 지나가므로
+            # 기존 멜 경로·트리모달 모델은 영향받지 않는다.
+            if "waveform" in batch:
+                model_inputs["waveform"] = batch["waveform"]
+                model_inputs["wav_attention_mask"] = batch["wav_attention_mask"]
+            logits = model(**model_inputs)
             loss = loss_fn(logits, batch["labels"])
 
             if is_train:

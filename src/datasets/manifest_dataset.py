@@ -76,7 +76,7 @@ class ManifestEmotionDataset(Dataset):
     def __init__(
         self, manifest_csv: str, cfg: Config, max_audio_seconds: float = 8.0,
         max_video_frames: int = 32, cache_dir: str | Path | None = None,
-        prosody_stats_path: str | Path | None = None,
+        prosody_stats_path: str | Path | None = None, return_waveform: bool = False,
     ):
         import pandas as pd
 
@@ -89,6 +89,11 @@ class ManifestEmotionDataset(Dataset):
         self.max_audio_seconds = max_audio_seconds
         self.max_video_frames = max_video_frames
         self.cache_dir = Path(cache_dir) if cache_dir else None
+        # wav2vec2 백본은 멜스펙트로그램이 아니라 원본 파형을 받는다.
+        # 캐시에 넣지 않고 매번 읽는 이유: build_manifest가 이미 16kHz mono로 저장해둬서
+        # soundfile로 바로 읽으면 리샘플링이 없어 충분히 빠르고, 파형까지 캐시하면
+        # 발화당 256KB가 더 늘어난다. 층 선택을 바꿔가며 실험하기에도 이 편이 유연하다.
+        self.return_waveform = return_waveform
 
         # 데이터 전처리 EDA 점검 문서(§1.2)의 최우선 항목: prosody 10차원은 스케일이
         # 서로 완전히 다른데(f0_mean 수백 vs jitter 0.01대) 지금까지 정규화가 전혀
@@ -160,7 +165,7 @@ class ManifestEmotionDataset(Dataset):
         # (8->7클래스 병합, src/datasets/labels.py 참고) 여기서 흡수한다 — CSV 자체는 안 건드림.
         label_idx = LABEL_TO_IDX[normalize_label(str(row.label).strip().lower())]
 
-        return {
+        item = {
             "utt_id": utt_id,
             "mel": mel,
             "prosody": prosody,
@@ -168,6 +173,20 @@ class ManifestEmotionDataset(Dataset):
             "text": str(row.text),
             "label": label_idx,
         }
+        if self.return_waveform:
+            import soundfile as sf
+            wav, sr = sf.read(row.wav_path, dtype="float32", always_2d=False)
+            if wav.ndim > 1:
+                wav = wav.mean(axis=1)
+            # build_manifest_aihub.py가 16kHz로 저장하므로 리샘플링은 필요 없지만,
+            # 다른 경로로 만들어진 데이터가 섞이면 조용히 틀리므로 확인하고 막는다.
+            if sr != self.cfg.audio_sample_rate:
+                raise ValueError(
+                    f"{row.wav_path}: 샘플레이트가 {sr}Hz인데 config는 "
+                    f"{self.cfg.audio_sample_rate}Hz를 기대함"
+                )
+            item["waveform"] = wav[: int(self.max_audio_seconds * sr)]
+        return item
 
 
 def _pad_time(arrays: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -204,7 +223,23 @@ class CollateFn:
             max_length=self.max_text_len, return_tensors="pt",
         )
 
+        out_extra = {}
+        if "waveform" in batch[0]:
+            # 파형은 [T] 1차원이라 _pad_time([T,...] 가정)을 그대로 못 쓴다.
+            # wav2vec2의 attention_mask는 1=유효(멜 쪽 key_padding_mask와 반대 규약)이므로
+            # 이름을 wav_attention_mask로 구분해 혼동을 막는다.
+            wavs = [b["waveform"] for b in batch]
+            max_len = max(len(w) for w in wavs)
+            wav_arr = np.zeros((len(wavs), max_len), dtype=np.float32)
+            wav_mask = np.zeros((len(wavs), max_len), dtype=np.int64)
+            for i, w in enumerate(wavs):
+                wav_arr[i, : len(w)] = w
+                wav_mask[i, : len(w)] = 1
+            out_extra["waveform"] = torch.from_numpy(wav_arr)
+            out_extra["wav_attention_mask"] = torch.from_numpy(wav_mask)
+
         return {
+            **out_extra,
             "utt_ids": [b["utt_id"] for b in batch],
             "mel_spec": mel_tensor,
             "audio_padding_mask": audio_mask,

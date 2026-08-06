@@ -43,6 +43,18 @@ VECTOR_DESC = {
 }
 
 
+def _drop_rare_classes(X, y, extra):
+    """표본이 1개뿐인 클래스를 뺀다 — stratify가 그런 클래스에서 ValueError로 죽는다.
+
+    그런 클래스는 어차피 학습/평가 어느 쪽에도 제대로 들어가지 못하므로 빼는 게 맞다.
+    extra(예: person_ids)도 같은 마스크로 잘라 인덱스 정합을 유지한다.
+    """
+    uniq, cnt = np.unique(y, return_counts=True)
+    usable = set(uniq[cnt >= 2])
+    keep = np.array([v in usable for v in y])
+    return X[keep], y[keep], (None if extra is None else extra[keep]), int((~keep).sum())
+
+
 def probe(X: np.ndarray, y: np.ndarray, seed: int, max_iter: int) -> tuple[float, float, int]:
     """X로 y를 맞히는 선형 프로브를 학습하고 (정확도, 우연 수준, 버린 표본 수)를 돌려준다.
 
@@ -58,11 +70,7 @@ def probe(X: np.ndarray, y: np.ndarray, seed: int, max_iter: int) -> tuple[float
     클래스는 어차피 학습/평가 어느 쪽에도 제대로 못 들어가므로 미리 빼고,
     몇 개를 뺐는지 호출부에 알려 결과 해석 시 참고하게 한다.
     """
-    uniq, cnt = np.unique(y, return_counts=True)
-    usable = set(uniq[cnt >= 2])
-    keep = np.array([v in usable for v in y])
-    dropped = int((~keep).sum())
-    X, y = X[keep], y[keep]
+    X, y, _, dropped = _drop_rare_classes(X, y, None)
 
     X_tr, X_te, y_tr, y_te = train_test_split(
         X, y, test_size=0.3, random_state=seed, stratify=y
@@ -113,6 +121,49 @@ def probe_within_speaker(
     return float(np.mean(lifts)), float(np.mean(chances)), int(np.mean(sizes))
 
 
+def probe_speaker_normalized(
+    X: np.ndarray, y: np.ndarray, person_ids: np.ndarray,
+    seed: int, max_iter: int, min_for_mean: int = 5,
+) -> tuple[float, float]:
+    """화자별 평균 벡터를 뺀 뒤 프로빙한다. 반환: (정확도, 우연 수준).
+
+    화자 고정 프로빙(probe_within_speaker)에서 "화자 변이가 감정을 덮는다"까지는
+    확인됐지만, 그 변이가 **단순한 평행이동(화자마다 벡터가 통째로 다른 위치)**인지는
+    별개 문제다. 평행이동이라면 화자 평균을 빼는 것만으로 지워진다. 그게 아니면
+    (예: 화자마다 감정 축의 방향 자체가 다르면) 평균을 빼도 별로 안 좋아진다.
+    이 차이가 v12 설계를 가른다 — 전자면 정규화/적대적 학습이 통하고, 후자면 안 통한다.
+
+    **평균은 반드시 프로브 학습셋에서만 낸다.** 평가셋 표본까지 넣어 평균을 내면
+    평가셋 정보가 전처리 단계로 새어 결과가 낙관적으로 부풀려진다.
+
+    실사용 관점: 로봇은 같은 사람을 반복해 만나므로 그 사람의 평균을 쌓아둘 수 있다
+    (라벨이 필요 없으니 정당하다). 다만 **처음 본 사람에게 즉시 판단할 때는 못 쓴다** —
+    아직 그 사람의 평균이 없기 때문이다. 이 수치는 "평균을 확보한 뒤"의 성능이다.
+    """
+    X, y, pid, _ = _drop_rare_classes(X, y, person_ids)
+
+    idx = np.arange(len(y))
+    tr, te = train_test_split(idx, test_size=0.3, random_state=seed, stratify=y)
+
+    # 학습셋 표본이 너무 적은 화자는 평균이 불안정하므로 전체 평균으로 대체한다
+    # (그 화자에 대해서는 화자 정규화를 사실상 안 하는 셈 — 과보정보다 안전하다).
+    global_mean = X[tr].mean(axis=0)
+    means = {}
+    for spk in np.unique(pid):
+        sel = tr[pid[tr] == spk]
+        means[spk] = X[sel].mean(axis=0) if len(sel) >= min_for_mean else global_mean
+
+    Xn = X - np.stack([means[p] for p in pid])
+
+    scaler = StandardScaler().fit(Xn[tr])
+    clf = LogisticRegression(max_iter=max_iter)
+    clf.fit(scaler.transform(Xn[tr]), y[tr])
+    acc = clf.score(scaler.transform(Xn[te]), y[te])
+
+    _, counts = np.unique(y[te], return_counts=True)
+    return acc, counts.max() / len(y[te])
+
+
 def probe_size_matched(
     X: np.ndarray, y: np.ndarray, n_samples: int,
     seed: int, max_iter: int, n_repeats: int = 5,
@@ -146,6 +197,10 @@ def main():
                              "층화 분할이 불가능하고 결과만 흔든다")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-iter", type=int, default=1000)
+    parser.add_argument("--speaker-normalize", action="store_true",
+                        help="화자별 평균 벡터를 뺀 뒤 감정·화자를 다시 프로빙한다 — "
+                             "화자 변이가 단순 평행이동인지 확인하고, 그걸 지웠을 때의 "
+                             "감정 성능 상한을 재학습 없이 추정한다")
     parser.add_argument("--within-speaker", action="store_true",
                         help="화자를 고정한 채 감정을 프로빙하고, 같은 표본 수의 화자혼합 "
                              "대조군과 비교한다 — 화자 정보가 '같이 들어있는' 것인지 "
@@ -204,6 +259,41 @@ def main():
                        "감정 쪽이 강함" if r < 0.8 else "비슷함")
         print(f"  {VECTOR_DESC[name]:16} 감정 {100*le:+6.2f}%p / 화자 {100*ls:+6.2f}%p "
               f"(비 {ratio_s}) -> {verdict}")
+
+    if args.speaker_normalize:
+        print()
+        print("=" * 76)
+        print("화자 평균 제거 후 재프로빙 — 화자 변이가 '단순 평행이동'인가")
+        print("=" * 76)
+        print("화자마다 벡터가 통째로 밀려 있는 것뿐이라면 평균을 빼면 지워진다.")
+        print("평균은 프로브 학습셋에서만 낸다(평가셋 정보 누출 방지).")
+        print()
+        print(f"{'표현':22} {'감정 원본':>10} {'감정 정규화':>12} {'변화':>9} "
+              f"{'화자 원본':>10} {'화자 정규화':>12}")
+        print("─" * 76)
+        for name in VECTOR_NAMES:
+            X = d[name]
+            e0 = results[(name, "감정")][0]
+            s0 = results[(name, "화자")][0]
+            e1, _ = probe_speaker_normalized(X, labels, person_ids, args.seed, args.max_iter)
+            s1, _ = probe_speaker_normalized(
+                X[spk_mask], person_ids[spk_mask], person_ids[spk_mask],
+                args.seed, args.max_iter)
+            print(f"{VECTOR_DESC[name]+' ('+name+')':22} {100*e0:>9.2f}% {100*e1:>11.2f}% "
+                  f"{100*(e1-e0):>+8.2f}%p {100*s0:>9.2f}% {100*s1:>11.2f}%")
+        print("─" * 76)
+        print("해석: **'감정 변화' 열만 증거다.**")
+        print("  뚜렷이 상승 -> 화자 변이가 평행이동이었다. 정규화/적대적 학습이 통한다")
+        print("  0 근처      -> 평행이동이 아니다(화자마다 감정 축 방향 자체가 다름 등).")
+        print("                 평균을 빼는 방식으로는 못 고치니 다른 접근이 필요하다")
+        print()
+        print("  화자 열은 증거가 아니라 뺄셈이 실행됐는지 보는 확인용이다 — 선형 프로브는")
+        print("  주로 평균을 읽으므로, 평균을 뺀 이상 변이의 성격과 무관하게 우연 수준으로")
+        print("  떨어진다(인공 데이터 검증에서 회전 세계도 똑같이 떨어짐을 확인).")
+        print()
+        print("주의: 이 수치는 '그 사람의 평균을 이미 확보한 뒤'의 성능이다.")
+        print("      로봇이 같은 사람을 반복해 만나는 상황에는 그대로 쓸 수 있지만,")
+        print("      처음 본 사람에게 즉시 판단할 때는 쓸 수 없다.")
 
     if args.within_speaker:
         print()

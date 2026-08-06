@@ -30,10 +30,7 @@ from src.config import load_config
 from src.model import TrimodalEmotionModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
 from src.datasets.labels import EMOTION_LABELS, KOREAN_LABELS
-
-
-def move_batch_to_device(batch: dict, device: torch.device) -> dict:
-    return {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
+from scripts.train import move_batch_to_device
 
 
 def fmt_row(label: str, probs, pred_idx: int, width: int = 9) -> str:
@@ -48,7 +45,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pairs", nargs="+", required=True,
                         help="'config1 ckpt1 config2 ckpt2 ...' 짝수 개")
-    parser.add_argument("--manifest", type=str, required=True)
+    parser.add_argument("--manifest", type=str, default=None,
+                        help="생략하면 첫 config의 train.test_manifest를 쓴다 — 다른 분할로 학습한 "
+                             "모델을 옛 test셋으로 들여다보는 사고를 막기 위한 기본값")
     parser.add_argument("--num", type=int, default=10, help="출력할 발화 개수")
     parser.add_argument("--max-batches", type=int, default=30,
                         help="훑어볼 배치 수 상한 (조건에 맞는 샘플을 찾기 위해 스캔하는 범위)")
@@ -69,6 +68,9 @@ def main():
 
     first_cfg = load_config(Path(combos[0][0]))
     train_cfg = first_cfg.raw["train"]
+    if args.manifest is None:
+        args.manifest = train_cfg["test_manifest"]
+        print(f"[inspect] --manifest 생략됨 -> config의 test_manifest 사용: {args.manifest}")
     collate_fn = make_collate_fn(first_cfg.text_pretrained)
     ds = ManifestEmotionDataset(
         args.manifest, first_cfg,

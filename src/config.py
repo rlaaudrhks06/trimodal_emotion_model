@@ -42,11 +42,17 @@ class Config:
     audio_n_fft: int
     audio_hop_length: int
     visual_face_size: int
-    labels: list
     raw: dict = field(default_factory=dict)  # yaml 원본 전체 (train 섹션 등 접근용)
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
+    """config.yaml -> Config.
+
+    주의: 라벨 체계의 단일 출처는 `src/datasets/labels.py`의 EMOTION_LABELS다.
+    예전엔 config에도 labels: 목록이 있었지만 어느 코드도 읽지 않았고, 실제로
+    3개 config가 8클래스 목록을 그대로 들고 있어 코드(7클래스)와 모순된 상태였다.
+    혼동의 소지만 있어 제거했다 — num_classes만 labels.py와 맞으면 된다.
+    """
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
@@ -64,6 +70,5 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         audio_n_fft=raw["audio"]["n_fft"],
         audio_hop_length=raw["audio"]["hop_length"],
         visual_face_size=raw["visual"]["face_size"],
-        labels=raw["labels"],
         raw=raw,
     )

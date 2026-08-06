@@ -72,11 +72,3 @@ train:
   periodic_checkpoint_dir: "checkpoints_periodic_si"
   checkpoint_interval: 5      # v9와 동일 — SWA 재료 확보용
 
-labels:
-  - angry
-  - disgust
-  - fear
-  - happy
-  - sad
-  - surprise
-  - neutral

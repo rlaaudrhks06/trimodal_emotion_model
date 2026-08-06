@@ -1,3 +1,7 @@
+# ⚠️ 이 파일은 v5 당시(8클래스) 설정을 남긴 기록용이며 **지금 코드로는 실행되지 않는다**.
+#   8.10절에서 경멸을 혐오에 병합해 src/datasets/labels.py가 7클래스로 고정됐기 때문에,
+#   num_classes=8로 학습을 걸면 클래스 가중치(7개)와 로짓(8개)이 안 맞아 첫 배치에서 죽는다.
+#   v5를 재현하려면 config가 아니라 labels.py의 LABEL_MERGE를 되돌려야 한다.
 # config_prosody_norm.yaml(v4 recipe)과 동일한 규제·prosody 정규화 설정에,
 # 8.7절 베이스라인 결과에 따라 영상 백본만 사전학습 모델로 교체한 실험용 설정.
 # checkpoint_dir을 분리해 v4와 안 겹치게 한다.
@@ -55,12 +59,3 @@ train:
   periodic_checkpoint_dir: "checkpoints_periodic_visual_pretrained"
   checkpoint_interval: 20
 
-labels:
-  - angry
-  - disgust
-  - fear
-  - happy
-  - sad
-  - surprise
-  - contempt
-  - neutral

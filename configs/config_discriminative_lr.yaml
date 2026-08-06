@@ -56,11 +56,3 @@ train:
   periodic_checkpoint_dir: "checkpoints_periodic_discriminative_lr"
   checkpoint_interval: 20
 
-labels:
-  - angry
-  - disgust
-  - fear
-  - happy
-  - sad
-  - surprise
-  - neutral

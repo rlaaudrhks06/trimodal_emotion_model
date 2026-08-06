@@ -62,11 +62,3 @@ train:
   # 하나도 못 잡아서 SWA(8.12절 A-1)가 실패했다 -> 간격을 5로 좁혀 재시도 여지를 남긴다.
   checkpoint_interval: 5
 
-labels:
-  - angry
-  - disgust
-  - fear
-  - happy
-  - sad
-  - surprise
-  - neutral

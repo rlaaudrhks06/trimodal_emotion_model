@@ -66,11 +66,3 @@ train:
   periodic_checkpoint_dir: "checkpoints_periodic_baseline_audio_w2v"
   checkpoint_interval: 5
 
-labels:
-  - angry
-  - disgust
-  - fear
-  - happy
-  - sad
-  - surprise
-  - neutral

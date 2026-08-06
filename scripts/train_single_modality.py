@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 from src.config import load_config
 from src.model_single_modality import SingleModalityModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
-from scripts.train import compute_class_weights, run_epoch
+from scripts.train import compute_class_weights, run_epoch, set_seed
 
 
 def main():
@@ -29,13 +29,16 @@ def main():
     parser.add_argument("--config", type=str, default=str(Path(__file__).resolve().parent.parent / "configs" / "config.yaml"))
     parser.add_argument("--modality", required=True, choices=["audio", "visual", "text"])
     parser.add_argument("--epochs", type=int, default=None, help="생략 시 config.yaml의 epochs 그대로 사용")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="재현성 — 베이스라인끼리(예: 멜 vs wav2vec2) 비교하려면 반드시 같은 seed여야 한다")
     args = parser.parse_args()
+    set_seed(args.seed)
 
     cfg = load_config(Path(args.config))
     train_cfg = cfg.raw["train"]
 
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    print(f"[train_single_modality:{args.modality}] device = {device}")
+    print(f"[train_single_modality:{args.modality}] device = {device}, seed = {args.seed}")
 
     cache_dir = train_cfg.get("feature_cache_dir")
     prosody_stats_path = train_cfg.get("prosody_stats_path")

@@ -4,7 +4,7 @@ model:
   n_heads: 8
   ffn_dim: 1024
   backbone_layers: 2        # 오디오/비주얼 프론트엔드 TransformerEncoder 층 수
-  num_classes: 8            # angry, disgust, fear, happy, sad, surprise, contempt, neutral
+  num_classes: 7            # angry, disgust, fear, happy, sad, surprise, contempt, neutral
   prosody_dim: 10           # features/prosody.py 참고
   # --- 과적합 대응(2차 학습, 100에폭 중 12에폭 이후 val_acc 정체/val_loss 상승 관찰) ---
   cross_attn_dropout: 0.2       # 0.1 -> 0.2
@@ -54,5 +54,4 @@ labels:
   - happy
   - sad
   - surprise
-  - contempt
   - neutral

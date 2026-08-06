@@ -24,15 +24,8 @@ from torch.utils.data import DataLoader
 from src.config import load_config
 from src.model import TrimodalEmotionModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
-from src.datasets.labels import EMOTION_LABELS
 from src.eval_report import print_and_collect, save_eval_result
-
-
-def move_batch_to_device(batch: dict, device: torch.device) -> dict:
-    return {
-        k: (v.to(device) if isinstance(v, torch.Tensor) else v)
-        for k, v in batch.items()
-    }
+from scripts.train import move_batch_to_device
 
 
 def main():

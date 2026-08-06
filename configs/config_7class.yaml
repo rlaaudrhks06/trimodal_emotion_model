@@ -54,11 +54,3 @@ train:
   periodic_checkpoint_dir: "checkpoints_periodic_7class"
   checkpoint_interval: 20
 
-labels:
-  - angry
-  - disgust
-  - fear
-  - happy
-  - sad
-  - surprise
-  - neutral

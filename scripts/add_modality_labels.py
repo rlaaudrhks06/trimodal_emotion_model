@@ -77,7 +77,12 @@ def collect_labels(raw_dir: Path) -> dict[str, dict[str, str]]:
     print(f"[add_labels] JSON {len(files):,}개 스캔", flush=True)
 
     out: dict[str, dict[str, str]] = {}
-    n_bad_json = n_missing_field = 0
+    # 실패는 **발화 단위로** 센다. 같은 발화가 여러 프레임에 반복 등장하는데, 첫 시도가
+    # 실패하면 out에 안 들어가서 다음 프레임에서 또 시도하고 또 세어진다. 단순 카운터로
+    # 세면 "13만 개 제외"처럼 실제보다 몇 배 부풀려진 수가 찍혀 데이터를 크게 잃은 것으로
+    # 오해하게 된다(실측: 카운터 130,515 vs 실제 수집 78,848 + 매칭률 98.3%).
+    failed_utts: set[str] = set()
+    n_bad_json = 0
     for i, fp in enumerate(files, 1):
         d = read_json(fp)
         if d is None:
@@ -100,11 +105,11 @@ def collect_labels(raw_dir: Path) -> dict[str, dict[str, str]]:
                 try:
                     labs = {m: normalize_label(em[m]["emotion"]) for m in MODALITIES}
                 except (KeyError, TypeError):
-                    n_missing_field += 1
+                    failed_utts.add(utt_id)
                     continue
                 # 병합/별칭을 거쳤는데도 우리 체계에 없는 값은 버린다(빈 값으로 남음).
                 if any(v not in EMOTION_LABELS for v in labs.values()):
-                    n_missing_field += 1
+                    failed_utts.add(utt_id)
                     continue
                 out[utt_id] = labs
         if i % 500 == 0:
@@ -112,8 +117,10 @@ def collect_labels(raw_dir: Path) -> dict[str, dict[str, str]]:
 
     if n_bad_json:
         print(f"[add_labels] 경고: JSON 파싱 실패 {n_bad_json}개")
-    if n_missing_field:
-        print(f"[add_labels] emotion 필드가 없거나 미지원 라벨인 발화 {n_missing_field:,}개 제외")
+    # 성공 뒤 다른 프레임에서 실패한 경우도 있으므로, 끝내 못 얻은 것만 남긴다
+    failed_utts -= out.keys()
+    if failed_utts:
+        print(f"[add_labels] emotion 필드가 없거나 미지원 라벨인 발화 {len(failed_utts):,}개 제외")
     return out
 
 

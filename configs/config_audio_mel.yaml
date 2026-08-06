@@ -18,8 +18,11 @@
 # 정보를 지우도록 학습돼 SER에 오히려 불리하다는 보고가 있어(arXiv:2104.03502),
 # SSL만 거친 다국어 모델을 쓴다. 한국어는 XLSR-53의 53개 언어에 포함돼 있다.
 #
-# 층 선택: SER에서는 마지막 층보다 중간 층 표현이 낫다는 보고가 일관된다.
-# w2v_layer로 바꿔가며 비교할 것(24층 모델 기준 6/12/18 등). 기본 12는 중간.
+# 층 선택: 처음엔 "SER에서는 중간 층이 낫다"는 일반론을 따라 12로 뒀다.
+# **이후 실제로 비교했고 그 전제가 우리 데이터에서 반증됐다**(8.24절):
+#   0층 +7.54  4층 +6.20  8층 +6.90  12층 +5.70  16층 +6.83  20층 +7.24  24층 +8.39 (%p)
+# 24층이 최고, 12층이 최하위인 U자형이다. 새 실험은 24층을 쓴다
+# (scripts/sweep_w2v_layers.py로 재현 가능).
 model:
   d_model: 256
   n_heads: 8
@@ -48,6 +51,8 @@ audio:
   # 가중치만 safetensors로 한 번 변환해서 쓴다(원본과 값이 완전히 동일함을 확인).
   #   python scripts/convert_to_safetensors.py \
   #       --repo facebook/wav2vec2-large-xlsr-53 --out models/wav2vec2-large-xlsr-53
+  # 아래 세 줄은 이 config(backbone: mel)에서는 **읽히지 않는다**. wav2vec2 설정과
+  # 스키마를 맞춰 두 config의 diff가 backbone 한 줄만 되게 하려고 남긴 것이다.
   pretrained_model: "models/wav2vec2-large-xlsr-53"
   w2v_layer: 12               # 0=임베딩 출력, 1~24=트랜스포머 층, 음수도 가능(-1=마지막)
   w2v_freeze: true            # 3.17억 파라미터 — v7 교훈대로 동결하고 특징 추출기로만 사용

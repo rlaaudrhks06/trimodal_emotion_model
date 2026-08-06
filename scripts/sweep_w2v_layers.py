@@ -1,7 +1,8 @@
 """wav2vec2의 어느 층이 감정 정보를 가장 많이 담고 있는지 프로빙으로 고른다.
 
-배경: config의 `w2v_layer: 12`는 "SER에서는 마지막 층보다 중간 층이 낫다"는 일반론만
-보고 정한 값이고, 우리 데이터에서 검증한 적이 없다. 그런데 오디오 브랜치는 남은 여지가
+배경: v11까지 쓰던 `w2v_layer: 12`는 "SER에서는 마지막 층보다 중간 층이 낫다"는
+일반론만 보고 정한 값이었다. 이 스크립트로 검증한 결과 **그 전제는 우리 데이터에서
+반증됐다** — 24층이 최고, 12층이 최하위였다(8.24절). v12a부터는 24층을 쓴다. 그런데 오디오 브랜치는 남은 여지가
 가장 큰 곳이다 — 정답 라벨과 소리 라벨의 일치율이 77.35%인데 우리 오디오 단독 모델은
 39.48%다(영상은 41.69% 상한에 35.59%로 이미 근접). 층 선택 하나로 출발점이 달라진다.
 
@@ -18,7 +19,12 @@
 test로 고르면 test가 오염되어 최종 성능 보고가 의미를 잃는다.
 
 실행 예:
-    python scripts/sweep_w2v_layers.py --config configs/config_si_w2v.yaml --limit 4000
+    python scripts/sweep_w2v_layers.py --config configs/config_v12a_layer24.yaml --limit 0 \
+        --max-iter 5000 --save results/embeddings/w2v_layers_val.npz
+
+주의: --limit을 작게 잡거나 --max-iter가 부족하면 프로브가 수렴하지 못해 층 간 차이가
+눌린다. 실제로 첫 측정(4,000개/1000회)에서는 "차이 없음"이 나왔다가, 전체·5000회로
+다시 재니 상승폭이 2배 이상 커지고 24층이 유의하게 앞섰다.
 """
 import argparse
 import sys

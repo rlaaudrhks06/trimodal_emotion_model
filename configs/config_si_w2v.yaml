@@ -45,7 +45,11 @@ audio:
   #   python scripts/convert_to_safetensors.py \
   #       --repo facebook/wav2vec2-large-xlsr-53 --out models/wav2vec2-large-xlsr-53
   pretrained_model: "models/wav2vec2-large-xlsr-53"
-  w2v_layer: 12               # SER은 마지막 층보다 중간 층이 낫다는 보고가 일관됨(8.18.2절)
+  # 12를 고른 근거는 "SER은 마지막 층보다 중간 층이 낫다"는 일반론이었다(8.18.2절).
+  # **이 전제는 이후 우리 데이터에서 반증됐다**(8.24절): val 전체 11,443개로 층별 프로빙을
+  # 해보니 24층(+8.39%p)과 0층(+7.54%p)이 높고 12층(+5.70%p)이 최하위인 U자형이었다.
+  # 이 값은 v11 실행 기록이므로 그대로 두고, 새 실험은 configs/config_v12a_layer24.yaml을 쓴다.
+  w2v_layer: 12
   w2v_freeze: true            # v7 교훈 — 이 데이터 규모에서 대형 사전학습 모델 파인튜닝은 과적합
   sample_rate: 16000
   n_mels: 80                  # wav2vec2 경로에선 안 쓰이지만 스키마 유지를 위해 남김

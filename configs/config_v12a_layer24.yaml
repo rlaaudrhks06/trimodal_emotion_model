@@ -1,0 +1,105 @@
+# 트리모달 + wav2vec2 24층 (v12a) — config_speaker_independent.yaml(v10)에서
+# 오디오 백본만 멜 -> wav2vec2로 바꾼 것.
+#
+# **v12a는 여기서 w2v_layer만 12 -> 24로 바꾼 것이다.** 변수 하나만 달라서
+# v11(test 46.19%)과 직접 비교하면 층 효과를 단독으로 알 수 있다.
+#
+# 근거(8.18절 / 11.0.1절): 같은 화자 독립 분할·같은 seed·같은 하이퍼파라미터에서
+# 오디오 단독 베이스라인을 두 백본으로 돌려 비교한 결과가 결정적이었다.
+#
+#   멜        최고 val 31.74%  (기준선 27.00% 대비 +4.74%p)
+#   wav2vec2  최고 val 39.48%  (기준선 27.00% 대비 +12.48%p)
+#
+# 기준선 대비 상승폭이 2.6배다. 이 프로젝트에서 단일 변경으로 이만한 개선은 없었다
+# (v5 얼굴 크롭 버그 수정이 test +3.05%p, v6 클래스 병합이 +2.16%p).
+# 오디오 브랜치가 사실상 무력한 상태에서 실질적 기여자로 바뀔 것으로 기대한다.
+#
+# **비용을 알고 가야 한다**:
+#   - 학습 시간: 오디오 단독 기준 2.0분 -> 16.2분/에폭(8배). 트리모달은 9.5분 -> 약 24분 예상.
+#   - 모델 크기: 1.21억 -> 4.37억 파라미터(동결이라 학습분은 836만 -> 876만으로 거의 그대로).
+#     추론 비용과 로봇 탑재 부담은 늘어난다(3.7절 경량화 과제와 충돌 — 통합 후 재검토 필요).
+#   - epochs를 40으로 낮춘 이유: v9·v10 모두 8~13에폭에서 정점이었다. 40이면 충분하다.
+#
+# 모델 하이퍼파라미터는 v10과 완전히 동일하게 두어 "오디오 백본 교체" 효과만 분리해서 본다.
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 7
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  cross_attn_drop_path: 0.1
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 12
+  visual_freeze_layers: 9
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  backbone: "wav2vec2"        # ← v10과 다른 유일한 모델 설정
+  # HF 원본이 아니라 로컬 변환본. transformers 최신 버전이 CVE-2025-32434 때문에
+  # torch<2.6에서 .bin 로딩을 거부하는데 facebook/wav2vec2-*는 safetensors가 없다.
+  # 서버 torch는 2.5.1+cu121이고 올리면 학습 환경이 위험해지므로 가중치만 변환해 쓴다.
+  #   python scripts/convert_to_safetensors.py \
+  #       --repo facebook/wav2vec2-large-xlsr-53 --out models/wav2vec2-large-xlsr-53
+  pretrained_model: "models/wav2vec2-large-xlsr-53"
+  # ← v11과 다른 유일한 부분. 층 스윕(11.3절)으로 정한 값이다.
+  #
+  # val 전체 11,443개 / 층 7개 / 분할 시드 5회 반복 / max_iter=5000 프로빙 결과
+  # (우연 27.00% 대비 상승폭):
+  #     0층 +7.54%p   4층 +6.20%p   8층 +6.90%p
+  #    12층 +5.70%p  16층 +6.83%p  20층 +7.24%p  24층 +8.39%p
+  #
+  # 24층이 12층보다 +2.69%p 높고, 이는 반복 간 표준편차(0.81%p)의 2배를 넘어 유의하다.
+  # 0층(7.54%p)도 높아 U자형이다 — 0층은 CNN 특징 추출기 출력(원시 음향), 중간 층은
+  # 음소·언어 정보에 가까워 감정이 오히려 지워진다. config 주석에 적었던
+  # "SER은 중간 층이 낫다"는 전제가 우리 데이터에선 반대였다.
+  #
+  # 주의: 프로브는 시간 평균한 특징을 보므로 "어느 층에 감정 정보가 많은가"를 잰 것이지
+  # "어느 층이 학습에 최적인가"가 아니다. 그래서 이 실험(v12a)으로 실제 학습 효과를 확인한다.
+  w2v_layer: 24
+  w2v_freeze: true            # v7 교훈 — 이 데이터 규모에서 대형 사전학습 모델 파인튜닝은 과적합
+  sample_rate: 16000
+  n_mels: 80                  # wav2vec2 경로에선 안 쓰이지만 스키마 유지를 위해 남김
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  # v10과 동일하게 128을 유지한다. 처음엔 메모리를 걱정해 64로 낮췄는데, 그러면
+  # 에폭당 옵티마이저 스텝이 443 -> 886으로 2배가 되어 "wav2vec2 효과"와 "배치 크기 효과"가
+  # 섞인다. 실측 추정상 A100 80GB에 여유가 충분하므로(어텐션이 층당 약 0.6GB, 동결이라
+  # 활성값도 안 쌓임) 변수를 하나만 바꾸는 쪽을 택했다.
+  batch_size: 128
+  epochs: 40
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+
+  # 화자 독립 분할 (8.14/8.17절). 재현 명령:
+  #   python scripts/split_manifest.py --manifest data/manifests/all.csv \
+  #       --out-dir data/manifests_si --unit speaker --seed 2026 --verify
+  train_manifest: "data/manifests_si/train.csv"
+  val_manifest: "data/manifests_si/val.csv"
+  test_manifest: "data/manifests_si/test.csv"
+  prosody_stats_path: "data/prosody_stats_train_si.json"
+
+  checkpoint_dir: "checkpoints_v12a_layer24"
+  periodic_checkpoint_dir: "checkpoints_periodic_v12a_layer24"
+  # 20으로 둔 이유: 파라미터가 4.37억으로 늘어 체크포인트 1개가 1.63GB다(v10은 0.45GB).
+  # 5에폭 간격이면 40에폭에 스냅샷만 13GB이고, 그중 10.6GB는 매번 똑같이 저장되는
+  # 동결 wav2vec2 가중치다. 스냅샷의 원래 용도였던 SWA는 두 차례 시도 끝에 효과 없음으로
+  # 결론났고(8.15.3절) 그 외 용도는 v6에서 한 번 썼을 뿐이라, 간격을 넓혀 낭비를 줄인다.
+  checkpoint_interval: 10

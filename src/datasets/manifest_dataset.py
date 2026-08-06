@@ -31,10 +31,15 @@ REQUIRED_COLUMNS = ["utt_id", "label", "wav_path", "text", "face_frames_dir"]
 
 
 def load_face_frames(frames_dir: str, face_size: int, max_frames: int = 32) -> np.ndarray:
-    """얼굴 크롭 프레임 디렉터리 -> [T_v, 3, H, W] float32 (0~1 정규화).
+    """얼굴 크롭 프레임 디렉터리 -> [T_v, 3, H, W] **uint8**(0~255).
 
     프레임 수가 max_frames보다 많으면 균등 샘플링, 적으면 그대로 둔다
     (배치 결합 시 collate_fn에서 0-패딩).
+
+    0~1 float32 변환은 여기서 하지 않고 __getitem__에서 한다 — 캐시에 float32로
+    저장하면 픽셀 하나가 4바이트가 되어 캐시가 4배로 부푼다(실측 303GB 중 93%가
+    이 프레임이었다). uint8로 저장하고 읽을 때 변환하면 값은 완전히 동일하면서
+    캐시가 약 201GB 줄어든다.
     """
     paths = sorted(Path(frames_dir).glob("*"))
     if len(paths) == 0:
@@ -50,13 +55,13 @@ def load_face_frames(frames_dir: str, face_size: int, max_frames: int = 32) -> n
         if img is None:
             continue
         img = cv2.resize(img, (face_size, face_size))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         frames.append(img.transpose(2, 0, 1))  # HWC -> CHW
 
     if len(frames) == 0:
         raise FileNotFoundError(f"유효한 이미지 프레임이 없음: {frames_dir}")
 
-    return np.stack(frames, axis=0)  # [T_v, 3, H, W]
+    return np.stack(frames, axis=0)  # [T_v, 3, H, W] uint8
 
 
 class ManifestEmotionDataset(Dataset):
@@ -138,6 +143,12 @@ class ManifestEmotionDataset(Dataset):
                 tmp_path = cache_path.with_name(cache_path.stem + ".tmp.npz")
                 np.savez(str(tmp_path), mel=mel, prosody=prosody, frames=frames)
                 tmp_path.replace(cache_path)
+
+        # 프레임은 uint8(0~255)로 저장/전달되므로 여기서 0~1 float32로 변환한다.
+        # 마이그레이션 도중에는 옛 캐시(float32, 이미 0~1)가 섞여 있을 수 있어 dtype으로 분기 —
+        # 둘 다 최종적으로 동일한 값이 된다.
+        if frames.dtype == np.uint8:
+            frames = frames.astype(np.float32) / 255.0
 
         if self.prosody_mean is not None:
             # 캐시에는 항상 원본(raw) prosody를 저장하고, 정규화는 읽을 때마다 적용한다

@@ -69,7 +69,7 @@ def main():
     with torch.no_grad():
         for batch in test_loader:
             batch = move_batch_to_device(batch, device)
-            logits = model(
+            model_inputs = dict(
                 mel_spec=batch["mel_spec"],
                 prosody_vec=batch["prosody_vec"],
                 frames=batch["frames"],
@@ -78,6 +78,15 @@ def main():
                 audio_padding_mask=batch["audio_padding_mask"],
                 visual_padding_mask=batch["visual_padding_mask"],
             )
+            # 위에서 return_waveform=True로 파형을 싣고도 모델엔 안 넘기고 있었다 —
+            # wav2vec2 백본은 파형이 없으면 ValueError를 던지므로(src/model.py:115)
+            # v11 평가가 아예 불가능한 상태였다. 멜 경로에선 batch에 "waveform" 키
+            # 자체가 없어 이 분기를 그냥 지나가므로 v1~v10 결과는 영향받지 않는다.
+            # 조건 분기 형태는 scripts/train.py:112-114에서 이미 검증된 것을 그대로 쓴다.
+            if "waveform" in batch:
+                model_inputs["waveform"] = batch["waveform"]
+                model_inputs["wav_attention_mask"] = batch["wav_attention_mask"]
+            logits = model(**model_inputs)
             all_preds.extend(logits.argmax(dim=-1).cpu().tolist())
             all_labels.extend(batch["labels"].cpu().tolist())
 

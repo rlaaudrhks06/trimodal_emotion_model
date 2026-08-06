@@ -108,15 +108,21 @@ def main():
             if b_idx >= args.max_batches and not args.summary:
                 break
             batch_d = move_batch_to_device(batch, device)
+            model_inputs = dict(
+                mel_spec=batch_d["mel_spec"], prosody_vec=batch_d["prosody_vec"],
+                frames=batch_d["frames"], input_ids=batch_d["input_ids"],
+                attention_mask=batch_d["attention_mask"],
+                audio_padding_mask=batch_d["audio_padding_mask"],
+                visual_padding_mask=batch_d["visual_padding_mask"],
+            )
+            # any_needs_wav로 파형을 싣고도 모델엔 안 넘기고 있었다(evaluate.py와 동일 버그).
+            if "waveform" in batch_d:
+                model_inputs["waveform"] = batch_d["waveform"]
+                model_inputs["wav_attention_mask"] = batch_d["wav_attention_mask"]
+
             all_probs = []
             for model in models:
-                logits = model(
-                    mel_spec=batch_d["mel_spec"], prosody_vec=batch_d["prosody_vec"],
-                    frames=batch_d["frames"], input_ids=batch_d["input_ids"],
-                    attention_mask=batch_d["attention_mask"],
-                    audio_padding_mask=batch_d["audio_padding_mask"],
-                    visual_padding_mask=batch_d["visual_padding_mask"],
-                )
+                logits = model(**model_inputs)
                 all_probs.append(F.softmax(logits, dim=-1).cpu())
             stacked = torch.stack(all_probs, dim=0)   # [모델수, B, 7]
             ens = stacked.mean(dim=0)                 # [B, 7]

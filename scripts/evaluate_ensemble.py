@@ -85,17 +85,25 @@ def main():
     with torch.no_grad():
         for batch in test_loader:
             batch = move_batch_to_device(batch, device)
+            model_inputs = dict(
+                mel_spec=batch["mel_spec"],
+                prosody_vec=batch["prosody_vec"],
+                frames=batch["frames"],
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                audio_padding_mask=batch["audio_padding_mask"],
+                visual_padding_mask=batch["visual_padding_mask"],
+            )
+            # any_needs_wav로 파형을 싣고도 모델엔 안 넘기고 있었다 — w2v 모델이 섞이면
+            # ValueError로 죽는다. 멜 전용 앙상블에선 "waveform" 키가 없어 그대로 지나간다.
+            # 멜 모델에 파형을 넘겨도 안전하다: src/model.py:114의 use_w2v가 False면 무시한다.
+            if "waveform" in batch:
+                model_inputs["waveform"] = batch["waveform"]
+                model_inputs["wav_attention_mask"] = batch["wav_attention_mask"]
+
             probs_sum = None
             for model in models:
-                logits = model(
-                    mel_spec=batch["mel_spec"],
-                    prosody_vec=batch["prosody_vec"],
-                    frames=batch["frames"],
-                    input_ids=batch["input_ids"],
-                    attention_mask=batch["attention_mask"],
-                    audio_padding_mask=batch["audio_padding_mask"],
-                    visual_padding_mask=batch["visual_padding_mask"],
-                )
+                logits = model(**model_inputs)
                 probs = F.softmax(logits, dim=-1)
                 probs_sum = probs if probs_sum is None else probs_sum + probs
             preds = (probs_sum / len(models)).argmax(dim=-1)

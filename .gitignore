@@ -9,6 +9,13 @@ data/manifests/*.csv
 # 화자독립 분할(manifests_si) 등 파생 매니페스트 — split_manifest.py + 시드로 재현 가능
 data/manifests_*/*.csv
 data/*.json
+
+# 매니페스트 백업 — add_modality_labels.py(.bak)와 5201-5600 복구 작업(.bak_before_*)이
+# 만든 원본 사본이다. 매니페스트 자체가 이미 무시 대상인데 확장자가 달라 규칙을 빠져나가,
+# `git status`에 data/ 전체가 미추적으로 떠서 실수로 27MB를 커밋할 뻔했다.
+data/**/*.bak
+data/**/*.bak_*
+data/**/*.tmp
 checkpoints/
 checkpoints_periodic/
 *.pt

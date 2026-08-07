@@ -1,7 +1,6 @@
 {
   "name": "v12b",
   "evaluated_at": "2026-08-07T15:45:39+09:00",
-  "hostname": "REDACTED",
   "manifest": "data/manifests_si/test.csv",
   "models": [
     {

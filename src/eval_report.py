@@ -10,7 +10,6 @@ F1, 혼동 행렬)는 터미널 출력으로만 확인하고 어디에도 파일
 평가 1회를 온전히 재현·검증할 수 있도록 설정(config/checkpoint 경로)까지 함께 기록한다.
 """
 import json
-import platform
 from datetime import datetime
 from pathlib import Path
 
@@ -72,10 +71,11 @@ def save_eval_result(
     out_dir = Path(out_dir) if out_dir else DEFAULT_EVAL_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # hostname은 기록하지 않는다 — 재현에 필요한 것은 config·checkpoint·manifest이고,
+    # 장비 이름은 저장소를 공개할 때 내부 호스트명만 노출한다.
     payload = {
         "name": name,
         "evaluated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "hostname": platform.node(),
         "manifest": manifest,
         "models": models,
         **metrics,

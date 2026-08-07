@@ -1,7 +1,6 @@
 {
   "name": "ensemble_v6_v7_v8_v9",
   "evaluated_at": "2026-08-06T01:42:41+09:00",
-  "hostname": "REDACTED",
   "manifest": "data/manifests/test.csv",
   "models": [
     {

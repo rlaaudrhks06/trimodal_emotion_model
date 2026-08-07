@@ -29,3 +29,8 @@ results/embeddings/
 
 # safetensors 변환본 (1.2GB) — convert_to_safetensors.py로 재생성 가능
 models/
+
+# 문서 PDF는 md에서 재생성한다(scripts/build_docs_pdf.py) — 통합기록만 6.7MB라
+# 갱신할 때마다 커밋하면 저장소가 금방 무거워진다. md와 assets/만 추적한다.
+docs/*.pdf
+docs/*.html

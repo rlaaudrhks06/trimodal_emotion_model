@@ -31,6 +31,9 @@ results/embeddings/
 # results/ 는 예외 — 의도적으로 공유하는 산출물만 여기에 둔다:
 #   results/csv_summary/ : 학습 곡선(에폭별 지표) CSV
 #   results/eval/        : 평가 결과 JSON (test accuracy/F1/혼동행렬 + 재현에 필요한 config·checkpoint 경로)
+#   results/predictions/ : 발화별 예측·확률 CSV (약 1.2MB/모델). 이걸 저장하지 않아
+#                          v11↔v12b를 짝지어 검정하지 못한 적이 있다(8.29.1절).
+#                          모델을 다시 돌리지 않고 사후 분석하려면 반드시 필요하다.
 # 체크포인트(.pt)는 개당 약 488MB라 git에 넣지 않는다 — 서버 archived_runs/에만 보관하고,
 # 위 두 디렉터리가 "그 체크포인트로 무엇을 얻었는지"의 기록 역할을 한다.
 

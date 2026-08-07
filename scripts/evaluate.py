@@ -16,8 +16,38 @@ from src.config import load_config
 from src.model import TrimodalEmotionModel
 from src.model_single_modality import SingleModalityModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
-from src.eval_report import print_and_collect, save_eval_result
+from src.eval_report import print_and_collect, save_eval_result, save_predictions
 from scripts.train import move_batch_to_device
+
+MODALITIES = ("audio", "visual", "text")
+
+
+def zero_modalities(model_inputs: dict, drop: tuple) -> dict:
+    """평가 시 특정 모달리티를 결정적으로 0으로 만든다(모달리티 애블레이션).
+
+    **학습 시 모달리티 드롭아웃(`src/model.py:_maybe_drop_modalities`)과 정확히 같은
+    방식으로 지운다.** 다르게 지우면 모델이 한 번도 본 적 없는 입력이 되어, 재는 것이
+    "그 브랜치의 기여도"가 아니라 "낯선 입력에 대한 반응"이 되어버린다.
+
+    - audio  : mel_spec + prosody_vec + waveform 셋 다 (설계상 오디오는 이 셋의 합)
+    - visual : frames
+    - text   : attention_mask를 0으로, 단 첫 토큰만 1 (BERT류는 유효 토큰 최소 1개 필요)
+    """
+    if not drop:
+        return model_inputs
+    out = dict(model_inputs)
+    if "audio" in drop:
+        out["mel_spec"] = torch.zeros_like(out["mel_spec"])
+        out["prosody_vec"] = torch.zeros_like(out["prosody_vec"])
+        if "waveform" in out:
+            out["waveform"] = torch.zeros_like(out["waveform"])
+    if "visual" in drop:
+        out["frames"] = torch.zeros_like(out["frames"])
+    if "text" in drop:
+        am = torch.zeros_like(out["attention_mask"])
+        am[:, 0] = 1
+        out["attention_mask"] = am
+    return out
 
 
 def main():
@@ -35,7 +65,20 @@ def main():
         "--save-as", type=str, default=None,
         help="결과를 results/eval/{이름}.json으로 저장 (예: v9, v7_swa). 생략하면 화면 출력만.",
     )
+    parser.add_argument(
+        "--drop-modality", action="append", choices=list(MODALITIES), default=None,
+        help="지정한 모달리티를 0으로 만들고 평가(모달리티 애블레이션). 여러 번 줄 수 있다. "
+             "학습 시 모달리티 드롭아웃과 같은 방식으로 지운다.",
+    )
+    parser.add_argument(
+        "--save-predictions", action="store_true",
+        help="발화별 정답·예측·확률을 results/predictions/{--save-as 이름}.csv로 저장. "
+             "짝지어 검정(McNemar)·신뢰도 보정·부분집합 분석에 필요하다.",
+    )
     args = parser.parse_args()
+    drop = tuple(sorted(set(args.drop_modality or ())))
+    if args.save_predictions and not args.save_as:
+        parser.error("--save-predictions는 파일 이름이 필요하므로 --save-as와 함께 써야 한다")
 
     cfg = load_config(Path(args.config))
     train_cfg = cfg.raw["train"]
@@ -65,7 +108,10 @@ def main():
     model.load_state_dict(torch.load(args.checkpoint, map_location=device))
     model.eval()
 
-    all_preds, all_labels = [], []
+    if drop:
+        print(f"[evaluate] 모달리티 애블레이션 — 0으로 만들 것: {', '.join(drop)}")
+
+    all_preds, all_labels, all_probs = [], [], []
     with torch.no_grad():
         for batch in test_loader:
             batch = move_batch_to_device(batch, device)
@@ -86,17 +132,33 @@ def main():
             if "waveform" in batch:
                 model_inputs["waveform"] = batch["waveform"]
                 model_inputs["wav_attention_mask"] = batch["wav_attention_mask"]
+            model_inputs = zero_modalities(model_inputs, drop)
             logits = model(**model_inputs)
+            # 예측은 기존 그대로 로짓의 argmax로 뽑는다 — softmax는 단조라 결과가
+            # 같지만, 지표 산출 경로를 건드리지 않기 위해 확률은 따로 계산한다.
             all_preds.extend(logits.argmax(dim=-1).cpu().tolist())
+            all_probs.extend(torch.softmax(logits.float(), dim=-1).cpu().tolist())
             all_labels.extend(batch["labels"].cpu().tolist())
 
     metrics = print_and_collect(all_labels, all_preds)
 
+    if args.save_predictions:
+        # shuffle=False라 DataLoader가 도는 순서가 매니페스트 행 순서와 같다
+        # (ManifestEmotionDataset.__getitem__이 self.df.iloc[idx]를 그대로 쓴다).
+        # 그래서 데이터셋을 건드리지 않고 여기서 utt_id를 붙일 수 있다.
+        save_predictions(test_ds.df["utt_id"].astype(str).tolist(),
+                         all_labels, all_preds, all_probs, name=args.save_as)
+
     if args.save_as:
+        extra = {}
+        if args.modality:
+            extra["modality"] = args.modality
+        if drop:
+            extra["dropped_modalities"] = list(drop)
         save_eval_result(
             metrics, name=args.save_as, manifest=args.manifest,
             models=[{"config": args.config, "checkpoint": args.checkpoint}],
-            extra={"modality": args.modality} if args.modality else None,
+            extra=extra or None,
         )
 
 

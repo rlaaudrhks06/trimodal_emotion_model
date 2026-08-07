@@ -20,6 +20,54 @@ from sklearn.metrics import (
 from .datasets.labels import EMOTION_LABELS
 
 DEFAULT_EVAL_DIR = Path("results/eval")
+DEFAULT_PRED_DIR = Path("results/predictions")
+
+
+def save_predictions(utt_ids, all_labels, all_preds, all_probs, name: str,
+                     out_dir: str | Path | None = None) -> Path:
+    """발화 하나하나의 정답·예측·확률을 CSV로 남긴다.
+
+    왜 필요한가(8.29.1절): v11과 v12b의 test 정확도 차이 0.97%p가 유의한지
+    판단하려면 짝지어 검정(McNemar)을 해야 하는데, 두 모델이 **각각 어느 발화를
+    맞히고 틀렸는지**를 저장하지 않아 사후에 할 수가 없었다. 집계 지표만으로는
+    "차이의 표준오차"를 독립 가정으로밖에 못 구해 실제보다 보수적이 된다.
+
+    확률까지 남기는 이유: 신뢰도 보정(temperature scaling)과 판단 보류(abstention)
+    분석이 전부 확률을 필요로 하는데, 이걸 저장해두면 **모델을 다시 돌리지 않고도**
+    할 수 있다. 짧은 발화 부분집합·화자별 분산 같은 사후 분석도 마찬가지다.
+    """
+    import pandas as pd
+
+    out_dir = Path(out_dir) if out_dir else DEFAULT_PRED_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    n = len(all_labels)
+    if not (len(utt_ids) == len(all_preds) == len(all_probs) == n):
+        raise ValueError(
+            f"길이 불일치: utt_id {len(utt_ids)}, label {n}, "
+            f"pred {len(all_preds)}, prob {len(all_probs)}"
+        )
+
+    df = pd.DataFrame({
+        "utt_id": utt_ids,
+        "label": all_labels,
+        "pred": all_preds,
+    })
+    for i, emo in enumerate(EMOTION_LABELS):
+        df[f"p_{emo}"] = [round(float(p[i]), 6) for p in all_probs]
+
+    # argmax(확률)과 저장된 pred가 어긋나면 둘 중 하나가 잘못 모인 것이다.
+    prob_argmax = df[[f"p_{e}" for e in EMOTION_LABELS]].to_numpy().argmax(axis=1)
+    n_mismatch = int((prob_argmax != df["pred"].to_numpy()).sum())
+    if n_mismatch:
+        # 소수점 6자리 반올림으로 1·2위가 동률이 되는 경우가 있어 경고만 남긴다.
+        print(f"[pred] 경고: pred와 확률 argmax가 {n_mismatch}건 불일치 "
+              f"(반올림 동률이면 무해)")
+
+    out_path = out_dir / f"{name}.csv"
+    df.to_csv(out_path, index=False)
+    print(f"[pred] 발화별 예측 저장: {out_path}  ({n:,}건)")
+    return out_path
 
 
 def print_and_collect(all_labels: list, all_preds: list, title: str = "") -> dict:

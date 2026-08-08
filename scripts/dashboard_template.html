@@ -1,0 +1,252 @@
+<title>trimodal emotion model — 학습·진단 대시보드</title>
+<style>
+  :root{
+    --bg:#f5f3ee; --surface:#fff; --surface2:#efece4; --border:#ddd8cb;
+    --ink:#1b1d22; --muted:#6b6f76; --faint:#9a9ea6;
+    --good:#2f9468; --warn:#bf4a41; --accent:#0f8b7e;
+    --leak:#a8760a; --leak-bg:#faf2e0;
+  }
+  @media (prefers-color-scheme:dark){:root{
+    --bg:#0c0e12; --surface:#14171d; --surface2:#191d24; --border:#262b33;
+    --ink:#e7e4db; --muted:#889099; --faint:#666e78;
+    --good:#4cc191; --warn:#e2695f; --accent:#3fbfae;
+    --leak:#d9a441; --leak-bg:#231d10;
+  }}
+  :root[data-theme="dark"]{
+    --bg:#0c0e12; --surface:#14171d; --surface2:#191d24; --border:#262b33;
+    --ink:#e7e4db; --muted:#889099; --faint:#666e78;
+    --good:#4cc191; --warn:#e2695f; --accent:#3fbfae;
+    --leak:#d9a441; --leak-bg:#231d10;
+  }
+  :root[data-theme="light"]{
+    --bg:#f5f3ee; --surface:#fff; --surface2:#efece4; --border:#ddd8cb;
+    --ink:#1b1d22; --muted:#6b6f76; --faint:#9a9ea6;
+    --good:#2f9468; --warn:#bf4a41; --accent:#0f8b7e;
+    --leak:#a8760a; --leak-bg:#faf2e0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:ui-sans-serif,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+    line-height:1.5;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+  .mono,h1,h2,.tk,.bl,.ax,.n,.vc{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+  .page{max-width:1120px;margin:0 auto;padding:26px 20px 64px}
+  .console{border:1px solid var(--border);border-radius:10px;background:var(--surface);overflow:hidden}
+  .bar-top{display:flex;align-items:center;gap:7px;padding:9px 14px;background:var(--surface2);
+    border-bottom:1px solid var(--border)}
+  .dot{width:9px;height:9px;border-radius:50%;opacity:.5}
+  .dot.r{background:var(--warn)}.dot.y{background:var(--leak)}.dot.g{background:var(--good)}
+  .path{margin-left:6px;font-size:12px;color:var(--muted);font-family:ui-monospace,monospace}
+
+  header{padding:26px 26px 22px;border-bottom:1px solid var(--border)}
+  .eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 9px}
+  h1{font-size:clamp(21px,3.2vw,28px);font-weight:700;letter-spacing:-.01em;margin:0 0 12px;text-wrap:balance}
+  .thesis{font-size:14px;color:var(--muted);max-width:70ch;margin:0}
+  .thesis b{color:var(--ink);font-weight:600}
+  .thesis+.thesis{margin-top:10px}
+
+  .stats{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--border);
+    border-bottom:1px solid var(--border)}
+  @media(max-width:860px){.stats{grid-template-columns:repeat(2,1fr)}}
+  .stat{background:var(--surface);padding:16px 18px;position:relative}
+  .stat .tag{font-family:ui-monospace,monospace;font-size:11px;letter-spacing:.05em;
+    color:var(--muted);display:flex;align-items:center;gap:6px;margin-bottom:9px}
+  .sw{width:8px;height:8px;border-radius:2px;flex:none}
+  .stat .num{font-family:ui-monospace,monospace;font-size:24px;font-weight:700;line-height:1}
+  .stat .sub{font-size:11.5px;color:var(--muted);margin-top:6px}
+  .stat.best::after{content:"best";position:absolute;top:13px;right:15px;font-size:10px;
+    letter-spacing:.08em;text-transform:uppercase;color:var(--good);font-family:ui-monospace,monospace}
+
+  section{padding:22px 26px;border-bottom:1px solid var(--border)}
+  section:last-of-type{border-bottom:none}
+  h2{font-size:13px;letter-spacing:.05em;text-transform:uppercase;font-weight:700;margin:0 0 4px}
+  .note{font-size:12.5px;color:var(--muted);margin:0 0 14px;max-width:74ch}
+  .note b{color:var(--ink)}
+
+  .band{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.04em;
+    padding:2px 7px;border-radius:4px;margin-left:8px;vertical-align:2px}
+  .band.clean{color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent)}
+  .band.leak{color:var(--leak);background:var(--leak-bg)}
+
+  .chart{overflow-x:auto}
+  .gl{stroke:var(--border);stroke-width:1}
+  .tk{font-size:10px;fill:var(--muted)}
+  .ax{font-size:10px;fill:var(--faint)}
+  .bl{font-size:10.5px;font-weight:700}
+  .bd{stroke:var(--surface);stroke-width:2}
+
+  .mults{display:grid;grid-template-columns:repeat(auto-fit,minmax(228px,1fr));gap:12px}
+  .mc{border:1px solid var(--border);border-radius:8px;padding:11px 13px 9px;background:var(--surface2)}
+  .mh{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+  .mt{font-family:ui-monospace,monospace;font-size:12px;font-weight:700}
+  .mg{font-family:ui-monospace,monospace;font-size:11px;color:var(--warn)}
+  .ms{font-size:11px;color:var(--muted);margin-top:4px}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  thead th{text-align:left;font-family:ui-monospace,monospace;font-size:10.5px;letter-spacing:.05em;
+    text-transform:uppercase;color:var(--muted);font-weight:600;padding:0 10px 8px;
+    border-bottom:1px solid var(--border)}
+  tbody td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr.leak td{opacity:.62}
+  td.n{font-family:ui-monospace,monospace;text-align:right}
+  td.n.hl{color:var(--good);font-weight:700}
+  .vc{display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:12px}
+  .vc i{width:9px;height:9px;border-radius:3px;display:inline-block}
+  .cond{font-size:11px;color:var(--muted)}
+  tr.leak .cond{color:var(--leak)}
+  .vd{font-size:11.5px;color:var(--muted)}
+
+  .bar{display:grid;grid-template-columns:104px 1fr 74px;gap:10px;align-items:center;
+    padding:5px 0;font-size:12.5px}
+  .bn{color:var(--muted)}
+  .bt{height:16px;background:var(--surface2);border-radius:3px;overflow:hidden}
+  .bt i{display:block;height:100%;background:var(--muted);border-radius:3px}
+  .bar.hl .bn,.bar.hl .bv{color:var(--ink);font-weight:700}
+  .bar.hl .bt i{background:var(--accent)}
+  .bv{font-family:ui-monospace,monospace;text-align:right}
+
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+  @media(max-width:840px){.split{grid-template-columns:1fr}}
+
+  .callout{display:flex;gap:11px;padding:13px 15px;border:1px solid var(--border);
+    border-left:3px solid var(--good);border-radius:6px;background:var(--surface2);
+    margin-top:14px;font-size:12.5px;line-height:1.6}
+  .callout.warn{border-left-color:var(--warn)}
+  .callout .mk{font-family:ui-monospace,monospace;font-weight:700;font-size:11px;
+    color:var(--muted);flex:none;padding-top:2px}
+  .callout p{margin:0 0 6px}.callout p:last-child{margin:0}
+  .callout b{color:var(--ink)}
+  footer{padding:16px 26px 22px;font-size:11.5px;color:var(--faint);font-family:ui-monospace,monospace}
+</style>
+
+<div class="page">
+<div class="console">
+  <div class="bar-top">
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="path">~/trimodal_emotion_model — v1 → v12b · A단계 진단</span>
+  </div>
+
+  <header>
+    <p class="eyebrow">training runs · ablation · robustness · calibration</p>
+    <h1>처음 보는 화자 기준 46.19% — 그리고 시끄러우면 37%로 무너진다</h1>
+    <p class="thesis">
+      <b>v11</b>(wav2vec2 오디오 백본)이 화자 독립 조건에서 test <b>46.19%</b>로 최고다.
+      뒤이은 두 시도는 개선을 내지 못했다 — <b>v12a</b>(wav2vec2 24층)는 프로브가 가리킨
+      방향이 학습에서는 반대였고, <b>v12b</b>(모달리티별 보조 학습)는 정규화가 아니라
+      <b>가속</b>으로 작동해 val→test 낙폭이 v11의 3배였다.
+    </p>
+    <p class="thesis">
+      그래서 재학습 대신 <b>v11을 해부했다</b>. 평가 8회·재학습 0회로 얻은 결론:
+      세 브랜치 모두 유의하게 기여해 <b>공짜로 뺄 것이 없고</b>, 텍스트 지름길 의심은
+      <b>기각</b>됐으며, 소음 20dB와 10dB 사이에 <b>절벽</b>이 있다. 그리고 확신이 낮을 때
+      답하지 않게 하면 <b>정확도가 60.66%까지 오른다</b> — 재학습 없이 지금 쓸 수 있는 유일한 레버다.
+    </p>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><div class="tag"><span class="sw" style="background:#6b7280"></span>v10</div>
+      <div class="num">44.15%</div><div class="sub">멜 오디오 · 화자 독립 첫 기준선</div></div>
+    <div class="stat best"><div class="tag"><span class="sw" style="background:#0f8b7e"></span>v11</div>
+      <div class="num">46.19%</div><div class="sub">wav2vec2 · 기준선 대비 +19.19%p</div></div>
+    <div class="stat"><div class="tag"><span class="sw" style="background:#c2185b"></span>v12a</div>
+      <div class="num">45.35%</div><div class="sub">24층 · val만 측정, 개선 없음</div></div>
+    <div class="stat"><div class="tag"><span class="sw" style="background:#d97706"></span>v12b</div>
+      <div class="num">45.22%</div><div class="sub">보조 학습 · v11과 구분 안 됨</div></div>
+    <div class="stat"><div class="tag"><span class="sw" style="background:var(--good)"></span>3클래스 재매핑</div>
+      <div class="num">67.34%</div><div class="sub">출력만 묶음 · 재학습 없음</div></div>
+  </div>
+
+  <section>
+    <h2>val_acc — 화자 독립 조건<span class="band clean">비교 가능</span></h2>
+    <p class="note">
+      train·test에 같은 화자가 없다. <b>이 넷만 서로 비교할 수 있다.</b>
+      굵은 점이 각 실험의 최고 val 지점이고, 체크포인트는 그 지점에서 고른다(8.27.1절에서 검증).
+    </p>
+    <div class="chart">{{CHART_CLEAN}}</div>
+  </section>
+
+  <section>
+    <h2>val_acc — 화자 누수 조건<span class="band leak">위와 비교 불가</span></h2>
+    <p class="note">
+      v1~v9는 장면 단위로만 나눈 탓에 <b>test 화자 278명 전원이 train에도 있었다.</b>
+      "이 사람은 화날 때 이렇더라"를 외워도 점수를 받을 수 있었다는 뜻이라,
+      위 구획의 숫자와 직접 비교하면 안 된다. 같은 레시피로 화자를 분리해 다시 학습하니
+      <b>실질 6.51%p가 사라졌다.</b> 버전 간 개선의 방향과 순위는 여전히 유효하다.
+    </p>
+    <div class="chart">{{CHART_LEAKY}}</div>
+  </section>
+
+  <section>
+    <h2>train_acc vs val_acc — 화자 독립 실험의 과적합</h2>
+    <p class="note">실선 = val, 점선 = train. 두 선이 벌어지는 지점부터가 과적합 구간이다.</p>
+    <div class="mults">{{GAPS}}</div>
+  </section>
+
+  <section>
+    <h2>A단계 진단 — 재학습 없이 v11을 해부하다</h2>
+    <p class="note">
+      v11 체크포인트 하나로 평가만 8회 돌렸다. 아래 수치는 전부 같은 test 세트(11,464 발화)이며,
+      발화별 예측을 저장해 사후 분석했다.
+    </p>
+
+    <div class="split">
+      <div>
+        <h2 style="font-size:11.5px;color:var(--muted);margin-bottom:10px">모달리티 애블레이션</h2>
+        {{ABLATION}}
+        <div class="callout warn">
+          <span class="mk">01</span>
+          <div><p><b>공짜로 뺄 수 있는 브랜치가 없다.</b> 셋 다 유의하게 기여하고,
+            하필 <b>텍스트가 가장 크다</b>(−6.59%p). KLUE-BERT 422MB + Whisper 150MB를
+            빼서 경량화하려던 구상이 여기서 무너졌다.</p>
+            <p>담당 감정은 다르다 — 오디오는 <b>분노</b>(−17%p), 영상은 <b>행복</b>(−22%p),
+            텍스트는 전반. 영상을 빼면 슬픔·중립·놀람이 오히려 오른다.</p></div>
+        </div>
+      </div>
+      <div>
+        <h2 style="font-size:11.5px;color:var(--muted);margin-bottom:10px">소음 강건성</h2>
+        {{NOISE}}
+        <div class="callout warn">
+          <span class="mk">02</span>
+          <div><p><b>20dB와 10dB 사이에 절벽이 있다.</b> 일반 가정의 음성 SNR이 정확히
+            그 구간이라, 조용한 방이면 44%·생활 소음이면 37%다.</p>
+            <p>운율을 깨끗하게 남겨줘도 회복이 <b>0</b>이었다 — 운율 게이트가 가장 필요한
+            순간에 작동하지 않는다. 소음에서는 <b>공포가 오분류 흡수처</b>가 된다(예측 835→3,121건).</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:22px">
+      <h2 style="font-size:11.5px;color:var(--muted);margin-bottom:10px">판단 보류 — 확신이 낮으면 답하지 않는다</h2>
+      <div class="split">
+        <table>
+          <thead><tr><th class="n">확신도 임계값</th><th class="n">응답률</th><th class="n">응답한 것의 정확도</th></tr></thead>
+          <tbody>{{ABSTAIN}}</tbody>
+        </table>
+        <div class="callout">
+          <span class="mk">03</span>
+          <div><p>신뢰도 보정은 <b>문제가 아니었다</b> — ECE 0.0710으로 살짝 과신하는 정도이고
+            온도 스케일링(T=1.17) 하나로 <b>0.0226</b>이 된다. 순위를 바꾸지 않으므로 정확도는 그대로다.</p>
+            <p><b>로봇은 모든 발화에 반응할 필요가 없다.</b> 임계값 0.5면 10개 중 4개에만
+            반응하되 그 4개는 60.7% 맞는다. 틀리게 확신하고 반응하는 로봇이 가만히 있는
+            로봇보다 신뢰를 빨리 잃는다.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>요약</h2>
+    <p class="note">test 열은 <code>results/eval/*.json</code>에 기록이 있는 것만 표시한다.</p>
+    <table>
+      <thead><tr><th>버전</th><th>조건</th><th class="n">최고 val</th><th class="n">에폭</th>
+        <th class="n">test</th><th>비고</th></tr></thead>
+      <tbody>{{TABLE}}</tbody>
+    </table>
+  </section>
+
+  <footer>
+    results/csv_summary/*.csv + results/eval/*.json 기준 · scripts/build_dashboard.py로 재생성 ·
+    근거는 통합기록 8.26~8.30절 · 현재 목표 60%
+  </footer>
+</div>
+</div>

@@ -12,9 +12,12 @@ train_loss 6줄이 그렇게 어긋난 적이 있다(8.19절). 여기서는 `res
 """
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 ROOT = Path(__file__).resolve().parent.parent
 CSV_DIR = ROOT / "results" / "csv_summary"
@@ -38,12 +41,14 @@ NOTE = {
     "v12b": "모달리티별 보조 학습 — 개선 없음",
 }
 
-# 8.30절(A단계) 결과. 서버에서 나온 값이며 통합기록·모델카드와 같은 출처다.
-# 해당 eval JSON이 로컬에 있으면 그쪽을 우선 읽는다(아래 load_eval 참고).
-ABLATION = [("전체", 46.19), ("텍스트 제거", 39.60), ("오디오 제거", 42.50), ("영상 제거", 42.87)]
-NOISE = [("깨끗", None, 46.19), ("SNR 20dB", 20, 43.92), ("SNR 10dB", 10, 37.18)]
-ABSTAIN = [(0.0, 100.0, 46.19), (0.3, 89.1, 48.41), (0.4, 64.2, 54.06),
-           (0.5, 40.4, 60.66), (0.6, 22.6, 68.91), (0.7, 12.1, 75.29), (0.8, 4.4, 82.40)]
+# A단계 진단(8.30절) — 어느 eval JSON을 어떤 이름으로 보여줄지만 정한다.
+# **수치는 박아 넣지 않는다.** results/eval/*.json에서 읽는다(8.19절 교훈).
+ABLATION_KEYS = [("전체", "v11"), ("텍스트 제거", "v11_no_text"),
+                 ("오디오 제거", "v11_no_audio"), ("영상 제거", "v11_no_visual")]
+NOISE_KEYS = [("깨끗", "v11"), ("SNR 20dB", "v11_noise20"), ("SNR 10dB", "v11_noise10")]
+
+# 판단 보류 곡선은 예측 CSV에서 직접 계산한다(analyze_predictions.py와 같은 방식).
+ABSTAIN_THRESHOLDS = (0.0, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
 
 
 def load_runs() -> dict:
@@ -71,6 +76,52 @@ def load_eval() -> dict:
             continue
         if "accuracy" in d:
             out[f.stem] = round(100 * d["accuracy"], 2)
+    return out
+
+
+def pick(evals: dict, keys: list) -> list:
+    """(표시명, eval 이름) 목록을 (표시명, 정확도)로 바꾼다. 없는 것은 건너뛴다."""
+    out = []
+    for label, key in keys:
+        if key in evals:
+            out.append((label, evals[key]))
+        else:
+            print(f"[dashboard] 건너뜀: results/eval/{key}.json 없음 — '{label}' 미표시")
+    return out
+
+
+def abstention(pred_csv: Path, val_csv: Path, thresholds=ABSTAIN_THRESHOLDS) -> list:
+    """예측 CSV에서 확신도 임계값별 (응답률, 응답한 것의 정확도)를 계산한다.
+
+    **온도 보정을 적용한 뒤 계산한다.** 보정 전 확률로 임계값을 잡으면 같은 0.5가
+    다른 확신도를 뜻하게 되고, 통합기록 8.30.5절·모델카드 2.9절의 수치와도 어긋난다.
+    보정 로직은 `analyze_predictions.py`에서 가져다 쓴다 — 두 벌로 두면 반드시 갈라진다.
+    """
+    if not pred_csv.exists():
+        print(f"[dashboard] {pred_csv.name} 없음 — 판단 보류 표를 비운다")
+        return []
+    from analyze_predictions import fit_temperature, apply_temperature
+
+    d = pd.read_csv(pred_csv)
+    pcols = [c for c in d.columns if c.startswith("p_")]
+    P = d[pcols].to_numpy()
+    if val_csv.exists():
+        v = pd.read_csv(val_csv)
+        t = fit_temperature(v[[c for c in v.columns if c.startswith("p_")]].to_numpy(),
+                            v["label"].to_numpy())
+        P = apply_temperature(P, t)
+        print(f"[dashboard] 판단 보류 — val에서 적합한 온도 T={t:.2f} 적용")
+    else:
+        print(f"[dashboard] {val_csv.name} 없음 — 보정 없이 계산(문서 수치와 다를 수 있다)")
+
+    conf = P.max(axis=1)
+    ok = (d["label"] == d["pred"]).to_numpy()
+    out = []
+    for th in thresholds:
+        sel = conf >= th
+        if sel.sum() == 0:
+            continue
+        out.append((th, 100 * sel.mean(), 100 * ok[sel].mean()))
     return out
 
 
@@ -177,11 +228,13 @@ def build(runs, evals) -> str:
             .replace("{{CHART_LEAKY}}", chart(runs, LEAKY, "화자 누수", 24, 50))
             .replace("{{GAPS}}", gap_cards(runs, CLEAN))
             .replace("{{TABLE}}", "".join(rows))
-            .replace("{{ABLATION}}", bars(ABLATION, 50))
-            .replace("{{NOISE}}", bars([(n, a) for n, _, a in NOISE], 50))
+            .replace("{{ABLATION}}", bars(pick(evals, ABLATION_KEYS), 50))
+            .replace("{{NOISE}}", bars(pick(evals, NOISE_KEYS), 50))
             .replace("{{ABSTAIN}}", "".join(
                 f'<tr><td class="n">{t:.1f}</td><td class="n">{c:.1f}%</td>'
-                f'<td class="n hl">{a:.2f}%</td></tr>' for t, c, a in ABSTAIN))
+                f'<td class="n hl">{a:.2f}%</td></tr>'
+                for t, c, a in abstention(ROOT / "results" / "predictions" / "v11.csv",
+                                          ROOT / "results" / "predictions" / "v11_val.csv")))
             .replace("{{BEST}}", best))
 
 

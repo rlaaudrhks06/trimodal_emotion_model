@@ -50,6 +50,27 @@ def zero_modalities(model_inputs: dict, drop: tuple) -> dict:
     return out
 
 
+def add_noise_to_waveform(batch: dict, snr_db: float, gen: torch.Generator) -> dict:
+    """배치의 파형에만 잡음을 더한다(운율·멜은 그대로).
+
+    **패딩을 제외한 유효 구간에서만 신호 전력을 잰다.** 패딩까지 넣고 평균을 내면
+    짧은 발화일수록 전력이 낮게 잡혀 잡음이 약해지고, 결국 발화 길이에 따라
+    SNR이 제각각이 된다 — wav2vec2 입력 정규화에서 이미 같은 함정을 겪었다.
+
+    잡음도 패딩 구간에는 넣지 않는다. `wav_attention_mask`는 1=유효 규약이다.
+    """
+    wav = batch["waveform"]
+    mask = batch["wav_attention_mask"].to(wav.dtype)          # [B, T] 1=유효
+    n_valid = mask.sum(dim=1).clamp(min=1)
+    p_signal = (wav.pow(2) * mask).sum(dim=1) / n_valid       # [B]
+    p_noise = p_signal / (10.0 ** (snr_db / 10.0))
+    noise = torch.randn(wav.shape, generator=gen, device=wav.device, dtype=wav.dtype)
+    noise = noise * p_noise.sqrt().unsqueeze(1) * mask
+    out = dict(batch)
+    out["waveform"] = wav + noise
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=str(Path(__file__).resolve().parent.parent / "configs" / "config.yaml"))
@@ -71,6 +92,16 @@ def main():
              "학습 시 모달리티 드롭아웃과 같은 방식으로 지운다.",
     )
     parser.add_argument(
+        "--noise-snr", type=float, default=None, metavar="dB",
+        help="오디오를 로드한 직후 백색잡음을 더한다 — 멜·운율·파형이 모두 오염되어 "
+             "실환경(시끄러운 방)과 일치한다. 특징 캐시는 자동으로 꺼진다.",
+    )
+    parser.add_argument(
+        "--noise-snr-wav-only", type=float, default=None, metavar="dB",
+        help="파형에만 잡음을 더한다(운율은 깨끗한 채로). --noise-snr과 비교하면 "
+             "'운율이 얼마나 받쳐주는가'가 분리된다. 실환경 수치로 쓰면 안 된다.",
+    )
+    parser.add_argument(
         "--save-predictions", action="store_true",
         help="발화별 정답·예측·확률을 results/predictions/{--save-as 이름}.csv로 저장. "
              "짝지어 검정(McNemar)·신뢰도 보정·부분집합 분석에 필요하다.",
@@ -79,6 +110,11 @@ def main():
     drop = tuple(sorted(set(args.drop_modality or ())))
     if args.save_predictions and not args.save_as:
         parser.error("--save-predictions는 파일 이름이 필요하므로 --save-as와 함께 써야 한다")
+    if args.noise_snr is not None and args.noise_snr_wav_only is not None:
+        parser.error("--noise-snr과 --noise-snr-wav-only는 같이 쓸 수 없다 — "
+                     "둘은 서로 다른 조건이라 섞으면 무엇을 쟀는지 알 수 없어진다")
+    if "audio" in drop and (args.noise_snr is not None or args.noise_snr_wav_only is not None):
+        parser.error("오디오를 0으로 만들면서 잡음을 넣는 건 의미가 없다")
 
     cfg = load_config(Path(args.config))
     train_cfg = cfg.raw["train"]
@@ -93,7 +129,8 @@ def main():
     collate_fn = make_collate_fn(cfg.text_pretrained)
     test_ds = ManifestEmotionDataset(args.manifest, cfg, cache_dir=cache_dir,
                                      prosody_stats_path=prosody_stats_path,
-                                     return_waveform=(cfg.audio_backbone == "wav2vec2"))
+                                     return_waveform=(cfg.audio_backbone == "wav2vec2"),
+                                     noise_snr_db=args.noise_snr)
     test_loader = DataLoader(
         # 학습 때와 같은 batch_size 사용 — 하드코딩된 16보다 훨씬 빠르고, 배치 크기가
         # 결과(정확도/지표)에 영향을 주지 않으므로 값을 맞출 이유는 없지만 속도상 유리하다.
@@ -110,11 +147,26 @@ def main():
 
     if drop:
         print(f"[evaluate] 모달리티 애블레이션 — 0으로 만들 것: {', '.join(drop)}")
+    if args.noise_snr is not None:
+        print(f"[evaluate] 소음 SNR {args.noise_snr}dB — 멜·운율·파형 전부 오염(실환경 조건)")
+    if args.noise_snr_wav_only is not None:
+        print(f"[evaluate] 소음 SNR {args.noise_snr_wav_only}dB — 파형에만 "
+              f"(운율은 깨끗함. 실환경보다 낙관적인 조건)")
+
+    # shuffle=False라 배치 순서가 결정적이므로, 시드 하나면 실행마다 같은 잡음이 된다.
+    noise_gen = torch.Generator(device=device).manual_seed(20260808)
 
     all_preds, all_labels, all_probs = [], [], []
     with torch.no_grad():
         for batch in test_loader:
             batch = move_batch_to_device(batch, device)
+            if args.noise_snr_wav_only is not None:
+                if "waveform" not in batch:
+                    raise ValueError(
+                        "--noise-snr-wav-only는 파형 입력이 있어야 한다 — 멜 백본 "
+                        "config에서는 --noise-snr을 쓸 것"
+                    )
+                batch = add_noise_to_waveform(batch, args.noise_snr_wav_only, noise_gen)
             model_inputs = dict(
                 mel_spec=batch["mel_spec"],
                 prosody_vec=batch["prosody_vec"],
@@ -155,6 +207,12 @@ def main():
             extra["modality"] = args.modality
         if drop:
             extra["dropped_modalities"] = list(drop)
+        if args.noise_snr is not None:
+            extra["noise_snr_db"] = args.noise_snr
+            extra["noise_scope"] = "all"      # 멜·운율·파형
+        if args.noise_snr_wav_only is not None:
+            extra["noise_snr_db"] = args.noise_snr_wav_only
+            extra["noise_scope"] = "waveform_only"
         save_eval_result(
             metrics, name=args.save_as, manifest=args.manifest,
             models=[{"config": args.config, "checkpoint": args.checkpoint}],

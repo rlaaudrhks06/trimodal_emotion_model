@@ -29,6 +29,34 @@ from .labels import LABEL_TO_IDX, normalize_label
 
 REQUIRED_COLUMNS = ["utt_id", "label", "wav_path", "text", "face_frames_dir"]
 
+
+def add_white_noise(y: np.ndarray, snr_db: float, seed: int) -> np.ndarray:
+    """지정한 SNR(dB)이 되도록 백색 가우시안 잡음을 더한다. **평가 전용.**
+
+    `SNR_dB = 10·log10(P_signal / P_noise)` 이므로 `P_noise = P_signal / 10^(SNR/10)`.
+    신호 전력은 이 발화 전체의 평균 제곱으로 잡는다(패딩 전이라 유효 구간뿐이다).
+
+    seed를 발화 ID에서 유도해 **워커 수·배치 순서와 무관하게 재현**되게 한다.
+    전역 난수를 쓰면 num_workers에 따라 결과가 달라져 비교가 깨진다.
+
+    한계: 실제 생활 소음(다른 사람 말소리, 가전, 반향)은 백색 잡음이 아니다.
+    이 수치는 "소음에 얼마나 버티는가"의 하한 감을 잡는 용도이지 실환경 수치가 아니다.
+    """
+    p_signal = float(np.mean(y.astype(np.float64) ** 2))
+    if p_signal <= 0:
+        return y
+    p_noise = p_signal / (10.0 ** (snr_db / 10.0))
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0.0, np.sqrt(p_noise), size=y.shape).astype(y.dtype)
+    return (y + noise).astype(y.dtype)
+
+
+def _utt_seed(utt_id: str, base: int = 20260808) -> int:
+    """발화 ID -> 결정적 시드. 파이썬 hash()는 실행마다 달라져서 못 쓴다."""
+    import hashlib
+    h = hashlib.sha256(f"{base}:{utt_id}".encode("utf-8")).digest()
+    return int.from_bytes(h[:4], "big")
+
 # v12 보조 라벨(11.2절): AI Hub 원본은 발화마다 감정 라벨을 네 개 갖고 있고,
 # 우리가 정답으로 쓰는 multimodal 라벨과 나머지 셋의 일치율이 크게 다르다
 # (소리 77.35% / 영상 41.69% / 텍스트 30.87%). 각 브랜치가 "자기 입력에 답이 있는"
@@ -95,6 +123,7 @@ class ManifestEmotionDataset(Dataset):
         self, manifest_csv: str, cfg: Config, max_audio_seconds: float = 8.0,
         max_video_frames: int = 32, cache_dir: str | Path | None = None,
         prosody_stats_path: str | Path | None = None, return_waveform: bool = False,
+        noise_snr_db: float | None = None,
     ):
         import pandas as pd
 
@@ -116,6 +145,16 @@ class ManifestEmotionDataset(Dataset):
         # soundfile로 바로 읽으면 리샘플링이 없어 충분히 빠르고, 파형까지 캐시하면
         # 발화당 256KB가 더 늘어난다. 층 선택을 바꿔가며 실험하기에도 이 편이 유연하다.
         self.return_waveform = return_waveform
+
+        # 소음 강건성 평가용(11.1절 A3). **기본값 None이면 아래가 전부 무동작이라
+        # 학습·기존 평가 동작이 완전히 동일하다.**
+        self.noise_snr_db = noise_snr_db
+        if noise_snr_db is not None and self.cache_dir is not None:
+            # 캐시에 든 멜·운율은 깨끗한 오디오로 계산해둔 것이다. 그대로 쓰면
+            # 파형만 오염되고 멜·운율은 깨끗한 채 남아 조건이 뒤섞인다.
+            print(f"[dataset] 소음 주입(SNR {noise_snr_db}dB) — 특징 캐시를 쓰지 않는다"
+                  f" (캐시된 멜·운율은 깨끗한 오디오 기준이라 섞이면 안 됨)")
+            self.cache_dir = None
 
         # 데이터 전처리 EDA 점검 문서(§1.2)의 최우선 항목: prosody 10차원은 스케일이
         # 서로 완전히 다른데(f0_mean 수백 vs jitter 0.01대) 지금까지 정규화가 전혀
@@ -141,6 +180,10 @@ class ManifestEmotionDataset(Dataset):
             row.wav_path, sr=self.cfg.audio_sample_rate, mono=True,
             duration=self.max_audio_seconds,
         )
+        # 소음은 특징 계산 **전에** 넣는다 — 멜·운율·파형이 모두 같은 오염된
+        # 오디오에서 나와야 실환경(마이크가 시끄러운 소리를 받는 상황)과 일치한다.
+        if self.noise_snr_db is not None:
+            y = add_white_noise(y, self.noise_snr_db, seed=_utt_seed(str(row.utt_id)))
         mel = waveform_to_mel(
             y, sr, n_mels=self.cfg.audio_n_mels,
             n_fft=self.cfg.audio_n_fft, hop_length=self.cfg.audio_hop_length,
@@ -212,7 +255,12 @@ class ManifestEmotionDataset(Dataset):
                     f"{row.wav_path}: 샘플레이트가 {sr}Hz인데 config는 "
                     f"{self.cfg.audio_sample_rate}Hz를 기대함"
                 )
-            item["waveform"] = wav[: int(self.max_audio_seconds * sr)]
+            wav = wav[: int(self.max_audio_seconds * sr)]
+            # 멜·운율과 **같은 시드**로 잡음을 넣는다. 여기서 빠뜨리면 wav2vec2
+            # 백본만 깨끗한 파형을 받아 조건이 어긋난다(v11은 파형만 읽는다).
+            if self.noise_snr_db is not None:
+                wav = add_white_noise(wav, self.noise_snr_db, seed=_utt_seed(str(row.utt_id)))
+            item["waveform"] = wav
         return item
 
 

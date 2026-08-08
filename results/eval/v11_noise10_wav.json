@@ -1,0 +1,135 @@
+{
+  "name": "v11_noise10_wav",
+  "evaluated_at": "2026-08-08T11:24:48+09:00",
+  "manifest": "data/manifests_si/test.csv",
+  "models": [
+    {
+      "config": "configs/config_si_w2v.yaml",
+      "checkpoint": "archived_runs/checkpoint_v11_best/best_model.pt"
+    }
+  ],
+  "accuracy": 0.368894,
+  "weighted_f1": 0.363584,
+  "macro_f1": 0.327395,
+  "n_samples": 11464,
+  "labels": [
+    "angry",
+    "disgust",
+    "fear",
+    "happy",
+    "sad",
+    "surprise",
+    "neutral"
+  ],
+  "confusion_matrix": [
+    [
+      68,
+      292,
+      190,
+      92,
+      151,
+      116,
+      54
+    ],
+    [
+      28,
+      587,
+      815,
+      347,
+      755,
+      330,
+      233
+    ],
+    [
+      0,
+      37,
+      331,
+      48,
+      147,
+      57,
+      59
+    ],
+    [
+      2,
+      76,
+      214,
+      1576,
+      232,
+      174,
+      191
+    ],
+    [
+      2,
+      71,
+      327,
+      107,
+      546,
+      53,
+      73
+    ],
+    [
+      4,
+      43,
+      376,
+      185,
+      112,
+      760,
+      120
+    ],
+    [
+      1,
+      70,
+      309,
+      345,
+      272,
+      125,
+      361
+    ]
+  ],
+  "per_class": {
+    "angry": {
+      "precision": 0.6476190476190476,
+      "recall": 0.07061266874350987,
+      "f1-score": 0.12734082397003746,
+      "support": 963.0
+    },
+    "disgust": {
+      "precision": 0.4991496598639456,
+      "recall": 0.18966074313408723,
+      "f1-score": 0.27487707796768907,
+      "support": 3095.0
+    },
+    "fear": {
+      "precision": 0.1291959406713505,
+      "recall": 0.48748159057437407,
+      "f1-score": 0.20425794507867942,
+      "support": 679.0
+    },
+    "happy": {
+      "precision": 0.5837037037037037,
+      "recall": 0.6393509127789047,
+      "f1-score": 0.6102613746369797,
+      "support": 2465.0
+    },
+    "sad": {
+      "precision": 0.24650112866817156,
+      "recall": 0.4631043256997455,
+      "f1-score": 0.3217442545668827,
+      "support": 1179.0
+    },
+    "surprise": {
+      "precision": 0.47058823529411764,
+      "recall": 0.475,
+      "f1-score": 0.4727838258164852,
+      "support": 1600.0
+    },
+    "neutral": {
+      "precision": 0.3308890925756187,
+      "recall": 0.24342548887390425,
+      "f1-score": 0.2804972804972805,
+      "support": 1483.0
+    }
+  },
+  "noise_snr_db": 10.0,
+  "noise_scope": "waveform_only"
+}

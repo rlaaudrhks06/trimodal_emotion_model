@@ -1,6 +1,6 @@
 {
   "name": "v11",
-  "evaluated_at": "2026-08-06T23:54:53+09:00",
+  "evaluated_at": "2026-08-08T08:50:03+09:00",
   "manifest": "data/manifests_si/test.csv",
   "models": [
     {

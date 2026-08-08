@@ -47,6 +47,24 @@ def load_pred(path: Path) -> pd.DataFrame:
     missing = need - set(df.columns)
     if missing:
         raise ValueError(f"{path}: 컬럼 없음 {sorted(missing)}")
+
+    # utt_id가 중복이면 아래 모든 비교에서 .loc[공통]이 행을 불려 결과가 조용히
+    # 틀어진다. 매니페스트에는 중복이 없어야 정상이므로 여기서 막는다.
+    dup = df["utt_id"].duplicated()
+    if dup.any():
+        raise ValueError(
+            f"{path}: utt_id가 {int(dup.sum())}건 중복이다 — 짝지어 비교가 불가능하다. "
+            f"예: {df.loc[dup, 'utt_id'].head(3).tolist()}"
+        )
+
+    # 확률을 6자리로 저장하므로 5e-7 미만은 0이 된다. 온도 적합에서 log(0)을
+    # 클리핑하게 되어 결과가 왜곡될 수 있으므로 얼마나 되는지 알려준다.
+    n_zero = int((df[PCOLS].to_numpy() == 0).sum())
+    if n_zero:
+        total = len(df) * len(PCOLS)
+        print(f"[load] {path.name}: 확률 0인 칸 {n_zero:,}/{total:,} "
+              f"({100*n_zero/total:.3f}%) — 저장 시 6자리 반올림 때문이다. "
+              f"온도 적합에서 1e-12로 클리핑된다")
     return df
 
 
@@ -62,8 +80,18 @@ def speaker_of(utt_ids: pd.Series) -> pd.Series:
     """utt_id = {clip_id}_{person_id}_{start}_{end} (build_manifest_aihub.py:217).
 
     clip_id에도 밑줄이 들어갈 수 있으므로 **뒤에서** 3칸을 자른다.
+
+    형식이 다르면 조용히 NaN이 되어 화자 분석 전체가 무의미해지므로, 파싱에
+    실패한 비율이 높으면 알린다 — 잘못된 표를 그럴듯하게 출력하는 것보다 낫다.
     """
-    return utt_ids.astype(str).str.rsplit("_", n=3).str[1]
+    s = utt_ids.astype(str)
+    out = s.str.rsplit("_", n=3).str[1]
+    n_bad = int(out.isna().sum())
+    if n_bad:
+        print(f"[화자] 경고: utt_id {n_bad:,}건이 "
+              f"'{{clip}}_{{person}}_{{start}}_{{end}}' 형식이 아니라 화자를 못 뽑았다. "
+              f"예: {s[out.isna()].head(3).tolist()}")
+    return out
 
 
 # ---------------------------------------------------------------- 기본 분석
@@ -120,7 +148,7 @@ def report_coarse(df: pd.DataFrame) -> None:
     print("\n" + "=" * 70)
     print("클래스 체계 재매핑 — 출력만 묶었을 때 (재학습 없음)")
     print("=" * 70)
-    print(f"  긍정=행복·놀람 / 부정=분노·혐오·공포·슬픔 / 중립=중립")
+    print("  긍정=행복·놀람 / 부정=분노·혐오·공포·슬픔 / 중립=중립")
     print(f"  정확도 {100*acc:.2f}% (±{100*half:.2f}%p)  최다클래스 기준선 {100*base:.2f}%  "
           f"정규화이득 {100*(acc-base)/(1-base):.1f}%")
     for grp in sorted(set(COARSE.values())):
@@ -150,8 +178,18 @@ def report_short(df: pd.DataFrame, manifest: Path, max_chars: int) -> None:
     print("\n" + "=" * 70)
     print("발화 길이별 정확도 — '텍스트 지름길'을 타고 있는가")
     print("=" * 70)
-    bins = [(0, max_chars), (max_chars + 1, 20), (21, 40), (41, 10**9)]
-    names = [f"≤{max_chars}자 (짧음)", f"{max_chars+1}~20자", "21~40자", "41자~"]
+    # 경계를 고정 상수로 두면 --short-chars가 그 값을 넘길 때 구간이 뒤집히거나
+    # 겹친다(예: 25면 두 번째 구간이 (26,20)). **짧음 기준이 항상 첫 경계**이고,
+    # 그보다 큰 기본 경계만 뒤에 붙인다 — 기본값 10에서는 10/20/40으로 종전과 같다.
+    edges = [max_chars] + [e for e in (20, 40) if e > max_chars]
+    bins, names = [], []
+    lo = 0
+    for e in edges:
+        bins.append((lo, e))
+        names.append(f"≤{e}자 (짧음)" if lo == 0 else f"{lo}~{e}자")
+        lo = e + 1
+    bins.append((lo, 10**9))
+    names.append(f"{lo}자~")
     overall = d["ok"].mean()
     for (lo, hi), nm in zip(bins, names):
         sel = d["nchars"].between(lo, hi)
@@ -169,7 +207,7 @@ def report_short(df: pd.DataFrame, manifest: Path, max_chars: int) -> None:
     if len(short):
         ex = short[~short["ok"]].head(5)
         if len(ex):
-            print(f"\n  짧은 발화 오답 예시:")
+            print("\n  짧은 발화 오답 예시:")
             for _, r in ex.iterrows():
                 print(f"    \"{r['text']}\"  정답 {EMOTION_LABELS[r['label']]} "
                       f"-> 예측 {EMOTION_LABELS[r['pred']]}")
@@ -235,15 +273,19 @@ def report_ablation(base: pd.DataFrame, paths: list) -> None:
     print("모달리티 애블레이션 — 어느 브랜치가 실제로 일하는가")
     print("=" * 70)
     b = base.set_index("utt_id")
-    acc0 = (b["label"] == b["pred"]).mean()
-    n = len(b)
     print(f"  {'조건':22} {'정확도':>9} {'기여도':>9}  판정")
-    print(f"  {'전체':22} {100*acc0:>8.2f}% {'—':>9}")
+    print(f"  {'전체':22} {100*(b['label'] == b['pred']).mean():>8.2f}% {'—':>9}")
     rows = []
     for p in paths:
         d = load_pred(Path(p)).set_index("utt_id")
         common = b.index.intersection(d.index)
+        if len(common) != len(b):
+            print(f"  [{Path(p).stem}] 경고: 공통 발화 {len(common):,}건 "
+                  f"(기준 {len(b):,}건) — 아래 수치는 공통 부분만으로 계산한다")
         d = d.loc[common]
+        # 기준 정확도도 **같은 공통 부분**에서 다시 계산해야 한다. 전체에서 구한
+        # 값과 비교하면 서로 다른 모집단을 빼는 셈이 된다.
+        acc0 = (b.loc[common, "label"] == b.loc[common, "pred"]).mean()
         acc = (d["label"] == d["pred"]).mean()
         drop = acc0 - acc
         # 같은 발화를 두 조건으로 평가한 것이므로 짝지어 표준오차를 쓴다:
@@ -310,7 +352,6 @@ def apply_temperature(probs: np.ndarray, t: float) -> np.ndarray:
 
 def report_calibration(test: pd.DataFrame, val_path: Path | None) -> None:
     P = test[PCOLS].to_numpy()
-    y = test["label"].to_numpy()
     ok = (test["label"] == test["pred"]).to_numpy()
 
     print("\n" + "=" * 70)

@@ -48,3 +48,7 @@ docs/*.html
 # 대시보드 HTML은 scripts/build_dashboard.py로 CSV·JSON에서 언제든 재생성된다.
 # 생성물이라 커밋하지 않는다(문서 PDF와 같은 이유).
 results/dashboard.html
+
+# 이슈 기록은 로컬 전용 — 실패와 오판을 있는 그대로 적은 내부 문서다.
+# 공개 저장소에 넣을 성격이 아니라고 판단했다(통합기록에는 각 절에 사후 정정으로 남아 있다).
+docs/감정인식_프로젝트_이슈기록.md

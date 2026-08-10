@@ -33,6 +33,8 @@ from robot.brain.preprocess import FaceCropper                  # noqa: E402
 COLOR = {"분노": (60, 24, 194), "혐오": (5, 92, 168), "공포": (172, 32, 109),
          "행복": (126, 139, 15), "슬픔": (201, 126, 74), "놀람": (6, 119, 217),
          "중립": (128, 114, 107)}
+# 로봇 행동은 3클래스로 결정되므로 화면도 그쪽을 크게 보여준다.
+COARSE_COLOR = {"긍정": (126, 175, 15), "부정": (60, 40, 200), "중립": (140, 128, 118)}
 
 
 class Demo:
@@ -42,7 +44,8 @@ class Demo:
                                     device=args.device,
                                     temperature=args.temperature,
                                     threshold=args.threshold,
-                                    audio_pretrained=args.audio_pretrained)
+                                    audio_pretrained=args.audio_pretrained,
+                                    decide_on=args.decide_on)
         self.cropper = None if args.no_camera else FaceCropper()
         self.faces = FaceBuffer()
         self.vad = MicVAD(VADConfig(), self.faces if not args.no_camera else None)
@@ -58,6 +61,11 @@ class Demo:
 
     # ---------------------------------------------------------------- 발화 처리
     def on_utterance(self, utt) -> None:
+        # Whisper는 빈·무음 오디오에서 "cannot reshape tensor of 0 elements"로 터진다.
+        # VAD가 길이는 걸러주지만 전부 0인 블록(마이크 순간 끊김)은 통과하므로 여기서 막는다.
+        import numpy as _np
+        if utt.wav.size < 1600 or float(_np.abs(utt.wav).max()) < 1e-4:
+            return
         with self.lock:
             self.state = "전사 중"
         try:
@@ -85,8 +93,8 @@ class Demo:
             return
 
         mark = "" if res.answered else "  [보류]"
-        line = (f"{res.emotion}({res.coarse}) {100*res.confidence:.0f}%"
-                f"{mark}  | {text[:26]}")
+        line = (f"{res.coarse} {100*res.coarse_confidence:.0f}%  "
+                f"({res.emotion} {100*res.confidence:.0f}%){mark}  | {text[:24]}")
         print(f"[demo] {line}  ({res.latency_ms:.0f}ms · 얼굴 {len(utt.faces_bgr)}장 · "
               f"{utt.duration:.1f}초)")
         with self.lock:
@@ -103,11 +111,13 @@ class Demo:
             state, last, log = self.state, self.last, list(self.log)
 
         if last is not None and last.answered:
-            col = COLOR.get(last.emotion, (200, 200, 200))
-            cv2.putText(frame, last.emotion, (18, 62),
+            col = COARSE_COLOR.get(last.coarse, (200, 200, 200))
+            cv2.putText(frame, last.coarse, (18, 62),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.7, col, 3)
-            cv2.putText(frame, f"{100*last.confidence:.0f}%", (18, 86),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 1)
+            cv2.putText(frame,
+                        f"{100*last.coarse_confidence:.0f}%   "
+                        f"{last.emotion} {100*last.confidence:.0f}%", (18, 86),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 1)
         elif last is not None:
             cv2.putText(frame, "HOLD", (18, 62),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.5, (150, 150, 150), 3)
@@ -186,6 +196,10 @@ def main():
                     help="신뢰도 보정 온도(8.30.5절에서 val로 적합한 값)")
     ap.add_argument("--threshold", type=float, default=0.5,
                     help="이 확신도 미만이면 판단을 보류한다")
+    ap.add_argument("--decide-on", choices=["coarse", "7class"], default="coarse",
+                    help="응답 여부를 무엇으로 판단할지. coarse는 긍정/부정/중립 그룹의 "
+                         "확률 합을 쓴다 — 로봇 행동이 그 해상도로 결정되고 정확도도 "
+                         "67.34%로 높다(8.29.3절)")
     ap.add_argument("--audio-pretrained", default=None,
                     help="config의 wav2vec2 경로를 대체한다. 서버의 변환본이 없는 맥에서는 "
                          "facebook/wav2vec2-large-xlsr-53 을 주면 HF 캐시로 돈다")

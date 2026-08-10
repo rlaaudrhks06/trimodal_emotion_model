@@ -41,9 +41,12 @@ COARSE = {"happy": "긍정", "surprise": "긍정",
 class Result:
     emotion: str            # 7클래스 (한글)
     coarse: str             # 긍정/부정/중립
-    confidence: float       # 보정 후 최대 확률
+    confidence: float       # 7클래스 최대 확률 (보정 후)
+    coarse_confidence: float  # 그 coarse 그룹의 확률 합
     probs: dict             # 감정 -> 확률 (보정 후)
+    coarse_probs: dict      # 긍정/부정/중립 -> 확률 합
     answered: bool          # 임계값을 넘겨 실제로 응답하는가
+    decided_on: str         # 응답 판단에 쓴 기준 ("7class" | "coarse")
     latency_ms: float
     text: str
 
@@ -51,13 +54,18 @@ class Result:
 class EmotionEngine:
     def __init__(self, config_path: str, checkpoint: str,
                  device: str | None = None, temperature: float = 1.17,
-                 threshold: float = 0.5, audio_pretrained: str | None = None):
+                 threshold: float = 0.5, audio_pretrained: str | None = None,
+                 decide_on: str = "coarse"):
         self.cfg = load_config(Path(config_path))
         self.device = torch.device(
             device or ("cuda" if torch.cuda.is_available()
                        else "mps" if torch.backends.mps.is_available() else "cpu"))
         self.temperature = temperature
         self.threshold = threshold
+        # 응답 여부를 7클래스 최대 확률로 볼지, 3클래스 그룹 합으로 볼지.
+        # 로봇 행동이 "좋음/나쁨/보통"으로 결정된다면 coarse가 맞는 기준이다.
+        assert decide_on in ("7class", "coarse")
+        self.decide_on = decide_on
 
         # ---- 준비물 검사를 **모델 로딩 전에** 한다. 백본 로딩만 수십 초라
         #      나중에 실패하면 그 시간을 통째로 버린다.
@@ -65,9 +73,15 @@ class EmotionEngine:
         if audio_pretrained:
             # config는 서버의 변환본 경로를 가리킨다. 맥에서는 HF 허브 id로 대체할 수
             # 있게 열어둔다 — 가중치는 같고 로딩 경로만 다르다.
+            #
+            # Config는 dataclass라 값이 로드 시점에 고정된다. raw만 고치면 모델은
+            # 여전히 옛 경로를 읽는다(실제로 그렇게 한 번 실패했다). 필드를 바꾼다.
             print(f"[engine] 오디오 백본 경로 대체: "
                   f"{self.cfg.audio_pretrained} -> {audio_pretrained}")
-            self.cfg.raw["audio"]["pretrained_model"] = audio_pretrained
+            self.cfg.audio_pretrained = audio_pretrained
+            if isinstance(self.cfg.raw.get("audio"), dict):
+                self.cfg.raw["audio"]["pretrained_model"] = audio_pretrained
+            assert self.cfg.audio_pretrained == audio_pretrained
 
         print(f"[engine] 모델 로딩 — {self.device}")
         self.model = TrimodalEmotionModel(self.cfg).to(self.device).eval()
@@ -78,7 +92,8 @@ class EmotionEngine:
         self.tokenizer = AutoTokenizer.from_pretrained(self.cfg.text_pretrained)
 
         n = sum(x.numel() for x in self.model.parameters())
-        print(f"[engine] 준비 완료 — 파라미터 {n:,} · 온도 {temperature} · 임계값 {threshold}")
+        print(f"[engine] 준비 완료 — 파라미터 {n:,} · 온도 {temperature} · "
+              f"임계값 {threshold} ({decide_on} 기준)")
 
     def _load_prosody_stats(self) -> dict | None:
         """학습이 운율을 정규화했다면 추론도 **같은 통계**를 써야 한다.
@@ -114,12 +129,31 @@ class EmotionEngine:
         i = int(p.argmax())
         name = EMOTION_LABELS[i]
         conf = float(p[i])
+
+        # coarse 확률은 **그룹에 속한 감정들의 확률을 더한 값**이다. 7클래스에서
+        # 슬픔 30·혐오 25·분노 15로 흩어져 있어도 "부정"으로는 70이 된다.
+        # 로봇 행동이 3클래스 해상도로 결정된다면 이쪽이 실제 확신도에 가깝고,
+        # 정확도도 7클래스 46.19%가 아니라 3클래스 67.34%가 적용된다(8.29.3절).
+        cp: dict[str, float] = {}
+        for j, e in enumerate(EMOTION_LABELS):
+            cp[COARSE[e]] = cp.get(COARSE[e], 0.0) + float(p[j])
+        top_coarse = max(cp, key=cp.get)
+        coarse_conf = cp[top_coarse]
+
+        if self.decide_on == "coarse":
+            answered, shown_coarse = coarse_conf >= self.threshold, top_coarse
+        else:
+            answered, shown_coarse = conf >= self.threshold, COARSE[name]
+
         return Result(
             emotion=KO[name],
-            coarse=COARSE[name],
+            coarse=shown_coarse,
             confidence=conf,
+            coarse_confidence=coarse_conf,
             probs={KO[e]: float(p[j]) for j, e in enumerate(EMOTION_LABELS)},
-            answered=conf >= self.threshold,
+            coarse_probs=cp,
+            answered=answered,
+            decided_on=self.decide_on,
             latency_ms=(time.perf_counter() - t0) * 1000,
             text=text,
         )

@@ -71,6 +71,8 @@ body{background:#fff;font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans 
 .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
 """
 
+CSS_EXTRA = ""
+
 ARROW = '<div class="arrow">▼</div>'
 
 
@@ -245,8 +247,215 @@ V11 = f"""
 </div>
 """
 
+# ------------------------------------------------ v11 흐름도 (텐서 형태 중심)
+# 형태는 실제 forward에 훅을 걸어 측정한 값이다 — 8초 발화 / 얼굴 24장 / 토큰 12개 기준.
+FLOW_CSS = """
+.flow{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;align-items:start}
+.col{display:flex;flex-direction:column;gap:0}
+.fb{border:1.8px solid;border-radius:9px;padding:9px 12px;background:#fff}
+.fb .t{font-size:13px;font-weight:650;line-height:1.3}
+.fb .s{font-size:11px;color:#7b818a;margin-top:2px;line-height:1.35}
+.fb .d{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#4a4f57;margin-top:4px;font-weight:600}
+.down{text-align:center;color:#c3c8ce;font-size:13px;margin:5px 0}
+.band{border:1.8px solid #d97706;background:#fffaf2;border-radius:10px;padding:13px 16px;margin:14px 0}
+.band .bh{font-size:14px;font-weight:700;color:#a85c05;margin-bottom:3px}
+.band .bw{font-size:11.5px;color:#8a9098;margin-bottom:10px}
+.band .two{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+.chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:4px}
+.chip{border:1.4px solid #3f4650;border-radius:16px;padding:4px 13px;font-size:12px;font-weight:600}
+.psum{margin-top:20px;border:1px solid #e3e5e8;border-radius:9px;background:#fafbfc;padding:13px 16px}
+.psum .ph{font-size:12px;font-weight:700;margin-bottom:9px;display:flex;justify-content:space-between}
+.psum table{width:100%;border-collapse:collapse;font-size:11.5px}
+.psum td{padding:3px 0;color:#6b7280}
+.psum td.v{text-align:right;font-family:ui-monospace,Menlo,monospace;color:#3f4650}
+.psum td.n{color:#3f4650;font-weight:600}
+"""
+
+
+def fb(cls, title, sub, dim):
+    s = f'<div class="s">{sub}</div>' if sub else ""
+    d = f'<div class="d">{dim}</div>' if dim else ""
+    return f'<div class="fb {cls}"><div class="t">{title}</div>{s}{d}</div>'
+
+
+V11_FLOW = f"""
+<div class="sheet">
+  <div class="title">v11 데이터 흐름 — 발화 1건이 지나가는 경로</div>
+  <div class="sub">괄호 안은 실제 텐서 크기 · 8초 발화 · 얼굴 24장 · 토큰 12개 기준</div>
+  <div class="meta">형태는 <b>forward에 훅을 걸어 측정</b>한 값이다 · d_model <b>256</b> ·
+    헤드 <b>8</b> · FFN <b>1024</b></div>
+
+  <div class="stage-name" style="margin-bottom:9px">① 입력 — 같은 발화 구간에서 동시에 수집</div>
+  <div class="flow">
+    <div class="col">
+      {fb("aud", "음성 파형", "16kHz mono", "128,000 샘플")}
+      <div class="down">▼</div>
+      {fb("aud", "wav2vec2 XLSR-53 <span class='frozen'>동결</span>", "12번째 층의 hidden state", "(399, 1024)")}
+      <div class="down">▼</div>
+      {fb("aud", "proj 1024→256 + TemporalConv", "+ 위치인코딩 + 트랜스포머 2층", "X_a (399, 256)")}
+    </div>
+    <div class="col">
+      {fb("vis", "얼굴 프레임", "mediapipe 재검출+정렬", "24장 × 3 × 112 × 112")}
+      <div class="down">▼</div>
+      {fb("vis", "MobileFaceNet <span class='frozen'>동결</span>", "얼굴 인식 전용 사전학습", "(24, 512)")}
+      <div class="down">▼</div>
+      {fb("vis", "proj 512→256 + TemporalConv", "+ 위치인코딩 + 트랜스포머 2층", "X_v (24, 256)")}
+    </div>
+    <div class="col">
+      {fb("txt", "전사문", "STT 또는 대본", "12 토큰")}
+      <div class="down">▼</div>
+      {fb("txt", "KLUE-BERT <span class='frozen'>동결</span>", "last_hidden_state (CLS만 쓰지 않음)", "(12, 768)")}
+      <div class="down">▼</div>
+      {fb("txt", "proj 768→256", "시퀀스 그대로 유지", "X_t (12, 256)")}
+    </div>
+  </div>
+
+  <div class="note" style="margin-top:11px">세 모달리티가 모두 <b>256차원</b>으로 통일되는 지점 —
+    여기서부터 서로 비교·결합이 가능해진다. 운율 10차원(f0·jitter·shimmer·HNR·energy)은
+    백본을 거치지 않고 ⑤의 게이트로 바로 들어간다.</div>
+
+  <div class="band">
+    <div class="bh">② 2단계 계층적 교차 어텐션 — 4블록</div>
+    <div class="bw">따로 판단해 투표하는 게 아니라, 각자가 다른 신호를 참조해 스스로를 보정한다.
+      표정이 먼저 변하고 1초 뒤 목소리가 떨리는 식의 <b>시차</b>를 잡기 위한 구조다.</div>
+    <div class="two">
+      <div>
+        <div style="font-size:12.5px;font-weight:650;margin-bottom:5px">1단계 &nbsp;오디오 ↔ 텍스트</div>
+        {fb("aud", "오디오 ← 텍스트", "\"무슨 말을\"이 \"어떤 억양\"을 보정", "(399, 256)")}
+        <div class="down">·</div>
+        {fb("txt", "텍스트 ← 오디오", "역방향", "(12, 256)")}
+      </div>
+      <div>
+        <div style="font-size:12.5px;font-weight:650;margin-bottom:5px">2단계 &nbsp;영상 ↔ (오디오+텍스트)</div>
+        {fb("vis", "영상 ← (A+T)", "\"표정이 그걸 뒷받침하나\"", "(24, 256)")}
+        <div class="down">·</div>
+        {fb("fus", "(A+T) ← 영상", "역방향 · A와 T를 이어붙인 411 길이", "(411, 256)")}
+      </div>
+    </div>
+  </div>
+
+  <div class="stage-name" style="margin:14px 0 4px">③ 풀링 + 하이브리드 결합</div>
+  <div class="stage-why">교차 어텐션 결과(미세 타이밍)와 백본 원본 평균(거시 분위기)을 함께 쓴다.
+    패딩은 평균에서 제외한다.</div>
+  <div class="flow">
+    {fb("aud", "concat[ z_cross_a ; mean(X_a) ]", "", "512")}
+    {fb("vis", "concat[ z_cross_v ; mean(X_v) ]", "", "512")}
+    {fb("txt", "concat[ z_cross_t ; mean(X_t) ]", "", "512")}
+  </div>
+  <div class="down">▼</div>
+  {fb("pro", "④ 운율 게이트 (오디오에만) &nbsp; g·z + (1−g)·Linear(운율 10차원)",
+      "억양이 잡음 많으면 안정적인 통계 쪽으로 비중을 자동 조절 — "
+      "<b>다만 소음 조건에서 기여가 0으로 측정됐다</b>(8.30.3절)", "512")}
+  <div class="down">▼</div>
+  {fb("cls", "⑤ concat[ 영상 512 ; 오디오 512 ; 텍스트 512 ]", "", "1536")}
+  <div class="down">▼</div>
+  {fb("cls", "Linear(1536→512) → GELU → Dropout(0.3) → Linear(512→7)", "", "은닉 512 → 로짓 7")}
+  <div class="down">▼</div>
+  <div class="chips">
+    <span class="chip" style="border-color:#c2185b">분노</span>
+    <span class="chip" style="border-color:#a8760a">혐오</span>
+    <span class="chip" style="border-color:#6d28d9">공포</span>
+    <span class="chip" style="border-color:#0f8b7e">행복</span>
+    <span class="chip" style="border-color:#3f7bb0">슬픔</span>
+    <span class="chip" style="border-color:#d97706">놀람</span>
+    <span class="chip" style="border-color:#6b7280">중립</span>
+  </div>
+  <div class="note" style="margin-top:9px">softmax → 가장 큰 것 하나 선택.
+    확신도가 낮으면 <b>판단을 보류</b>하는 편이 낫다 — 임계값 0.5에서 응답률 40.4%에
+    정확도 60.66%다(8.30.5절).</div>
+
+  <div class="psum">
+    <div class="ph"><span>실제 학습되는 파라미터</span>
+      <span>합계 <b>876만 / 4억 3,688만 &nbsp;(2.0%)</b></span></div>
+    <table>
+      <tr><td class="n">오디오</td><td>wav2vec2 XLSR-53 <b>동결</b> + proj·프론트엔드</td>
+        <td class="v">224만 / 3억 1,767만</td></tr>
+      <tr><td class="n">영상</td><td>MobileFaceNet <b>동결</b> + proj·프론트엔드</td>
+        <td class="v">210만 / 416만</td></tr>
+      <tr><td class="n">텍스트</td><td>KLUE-BERT <b>완전 동결</b> + proj</td>
+        <td class="v">19.7만 / 1억 1,081만</td></tr>
+      <tr><td class="n">융합</td><td>교차 어텐션 4블록</td><td class="v">316만 / 316만</td></tr>
+      <tr><td class="n">운율 게이트</td><td></td><td class="v">27.3만 / 27.3만</td></tr>
+      <tr><td class="n">분류기</td><td></td><td class="v">79.1만 / 79.1만</td></tr>
+    </table>
+    <div class="note" style="margin-top:9px;border:none;padding:0">
+      전체 파라미터의 <b>98.0%가 동결된 사전학습 가중치</b>다. 8만 발화 규모에서 대형 모델을
+      파인튜닝하면 과적합이 심해진다는 것을 v1~v7에서 여섯 번 확인한 결과다.
+    </div>
+  </div>
+
+  <div class="foot">configs/config_si_w2v.yaml · 형태는 forward 훅으로 실측 ·
+    scripts/build_architecture_diagrams.py로 생성</div>
+</div>
+"""
+
+# ------------------------------------------------ v10 (v11과 같은 단계형 서식)
+V10 = f"""
+<div class="sheet">
+  <div class="title">직전 설계 — v10 트리모달 (멜 오디오)</div>
+  <div class="sub">화자 독립 조건에서 처음 측정한 기준선 — v11은 여기서 오디오 백본만 바꾼 것이다</div>
+  <div class="meta">클래스 <b>C = 7</b> · 전체 <b>121,039,367</b> 파라미터(fp32 462MB) ·
+    학습 <b>8,362,503</b>개(6.9%) · test <b>44.15%</b>(화자 독립)</div>
+
+  {stage(1, "입력", "v11과 동일하다 — 바뀐 것은 오디오를 어떻게 표현하느냐뿐이다",
+    '<div class="row">'
+    '<div class="box aud"><div class="bt">멜 스펙트로그램</div>'
+    '<div class="bs">파형을 주파수-시간 격자로 변환</div><div class="dim">8초 → (800, 80)</div></div>'
+    '<div class="box vis"><div class="bt">얼굴 프레임</div>'
+    '<div class="bs">mediapipe 재검출+정렬</div><div class="dim">112 × 112</div></div>'
+    '<div class="box txt"><div class="bt">전사문</div><div class="bs">STT / 대본</div></div>'
+    '<div class="box pro"><div class="bt">운율 10차원</div>'
+    '<div class="bs">f0 · jitter · shimmer · HNR · energy</div></div>'
+    '</div>')}
+  {ARROW}
+  {stage(2, "백본 — 여기가 v11과 갈리는 유일한 지점",
+    "세 모달리티 중 오디오만 사전학습 없이 처음부터 학습하고 있었고, 단일 성능도 가장 낮았다(31.74%)",
+    '<div class="row">'
+    '<div class="box aud"><div class="bt">TemporalConv 프론트엔드<span class="frozen train">전부 학습</span></div>'
+    '<div class="bs"><b>사전학습 없음</b> — 8만 발화로 처음부터 배운다</div>'
+    '<div class="dim">1.8M (전부 학습)</div></div>'
+    '<div class="box vis"><div class="bt">MobileFaceNet<span class="frozen">동결</span></div>'
+    '<div class="bs">얼굴 인식 전용 사전학습</div><div class="dim">4.2M · proj 512→256</div></div>'
+    '<div class="box txt"><div class="bt">KLUE-BERT base<span class="frozen">동결</span></div>'
+    '<div class="bs">12층 전부 동결</div><div class="dim">110.8M · proj 768→256</div></div>'
+    '</div>'
+    '<div class="note"><b>이것이 v11로 넘어간 이유다.</b> 화자 누수를 걷어내자 개인화 단서에 '
+    '기댈 수 없게 됐고, 그러자 <b>모달리티 자체의 표현력</b>이 더 중요해졌다. '
+    '오디오만 사전학습이 없었으므로 거기가 1순위였다.</div>')}
+  {ARROW}
+  {stage(3, "2단계 계층적 교차 어텐션 (4블록)", "v11과 완전히 동일하다",
+    '<div class="row">'
+    '<div class="box fus"><div class="bt">1단계 &nbsp; 오디오 ↔ 텍스트</div>'
+    '<div class="bs">양방향 2블록</div></div>'
+    '<div class="box fus"><div class="bt">2단계 &nbsp; 영상 ↔ (오디오+텍스트)</div>'
+    '<div class="bs">양방향 2블록</div></div>'
+    '</div>')}
+  {ARROW}
+  {stage(4, "하이브리드 결합 + 운율 게이트 + 분류기", "v11과 완전히 동일하다",
+    '<div class="box wide cls">'
+    '<div class="bt">concat[ 영상 512 ; 오디오 512 ; 텍스트 512 ] = 1536 '
+    '→ Linear(1536→512) → GELU → Dropout → Linear(512→7)</div></div>')}
+  {ARROW}
+  <div class="box wide out"><div class="bt">7클래스 로짓 → softmax</div>
+    <div class="bs">test 44.15% · 기준선(27.00%) 대비 +17.15%p</div></div>
+
+  <div class="note" style="margin-top:18px">
+    <b>v10 → v11에서 바뀐 것은 오디오 백본 하나뿐이다.</b>
+    멜 + 처음부터 학습(1.8M) → wav2vec2-large-XLSR-53 동결(315.4M) + proj·프론트엔드.
+    그 결과 전체 파라미터가 1.21억 → 4.37억으로 늘었지만 <b>학습 파라미터는 836만 → 876만으로
+    거의 그대로다</b>(늘어난 40만은 proj 1024→256과 넓어진 첫 Conv1d).
+    test는 44.15% → <b>46.19%</b>, 클래스별 F1은 7개 중 6개가 올랐다.
+  </div>
+
+  <div class="foot">configs/config_speaker_independent.yaml · 통합기록 8.17절 ·
+    scripts/build_architecture_diagrams.py로 생성</div>
+</div>
+"""
+
 DIAGRAMS = {"v2": ("architecture_v2_bimodal.png", V2),
-            "v11": ("architecture_v11.png", V11)}
+            "v10": ("architecture_v10.png", V10),
+            "v11": ("architecture_v11.png", V11),
+            "v11flow": ("architecture_v11_flow.png", V11_FLOW)}
 
 
 def render(html: str, out: Path, width: int = 1180) -> None:
@@ -254,7 +463,7 @@ def render(html: str, out: Path, width: int = 1180) -> None:
         sys.exit(f"Chrome을 찾을 수 없다: {CHROME}")
     with tempfile.TemporaryDirectory() as td:
         src = Path(td) / "d.html"
-        src.write_text(f"<meta charset=utf-8><style>{CSS}</style>{html}", encoding="utf-8")
+        src.write_text(f"<meta charset=utf-8><style>{CSS}{FLOW_CSS}</style>{html}", encoding="utf-8")
         # --window-size의 높이는 넉넉히 주고 --screenshot이 전체를 잡게 한다.
         subprocess.run(
             [CHROME, "--headless", "--disable-gpu", "--hide-scrollbars",

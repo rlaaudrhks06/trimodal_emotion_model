@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import queue
 import threading
 import time
 from collections import deque
@@ -45,7 +46,8 @@ class Demo:
                                     temperature=args.temperature,
                                     threshold=args.threshold,
                                     audio_pretrained=args.audio_pretrained,
-                                    decide_on=args.decide_on)
+                                    decide_on=args.decide_on,
+                                    hold_as_neutral=args.hold_as_neutral)
         self.cropper = None if args.no_camera else FaceCropper()
         self.faces = FaceBuffer()
         self.vad = MicVAD(VADConfig(), self.faces if not args.no_camera else None)
@@ -59,12 +61,44 @@ class Demo:
         self.last: object = None
         self.lock = threading.Lock()
 
+        # Whisper도 PyTorch 모델도 스레드 안전하지 않다. 발화가 겹칠 때 동시에
+        # 들어가면 NaN·엉뚱한 예외·segfault가 난다. 큐에 쌓고 **워커 하나만** 처리한다.
+        # maxsize로 밀린 발화는 버린다 — 실시간이라 오래된 것을 붙잡을 이유가 없다.
+        self.q: queue.Queue = queue.Queue(maxsize=2)
+        self.dropped = 0
+        threading.Thread(target=self._worker, daemon=True).start()
+
     # ---------------------------------------------------------------- 발화 처리
+    def enqueue(self, utt) -> None:
+        """VAD 스레드에서 불린다. 절대 여기서 무거운 일을 하지 않는다."""
+        try:
+            self.q.put_nowait(utt)
+        except queue.Full:
+            self.dropped += 1
+            print(f"[demo] 처리 중이라 발화 1건 건너뜀 (누적 {self.dropped})")
+
+    def _worker(self) -> None:
+        while True:
+            utt = self.q.get()
+            try:
+                self.on_utterance(utt)
+            except Exception as e:      # 워커가 죽으면 이후 모든 발화가 멈춘다
+                print(f"[demo] 처리 중 예외: {type(e).__name__}: {e}")
+                with self.lock:
+                    self.state = "대기 중"
+            finally:
+                self.q.task_done()
+
     def on_utterance(self, utt) -> None:
         # Whisper는 빈·무음 오디오에서 "cannot reshape tensor of 0 elements"로 터진다.
         # VAD가 길이는 걸러주지만 전부 0인 블록(마이크 순간 끊김)은 통과하므로 여기서 막는다.
         import numpy as _np
-        if utt.wav.size < 1600 or float(_np.abs(utt.wav).max()) < 1e-4:
+        w = utt.wav
+        # Whisper는 빈·무음·비정상 오디오에서 0크기 텐서나 NaN으로 터진다.
+        # VAD가 길이는 걸러주지만 마이크 순간 끊김은 통과하므로 여기서 막는다.
+        if (w.size < 3200                        # 0.2초 미만
+                or not _np.isfinite(w).all()
+                or float(_np.abs(w).max()) < 1e-3):
             return
         with self.lock:
             self.state = "전사 중"
@@ -142,7 +176,7 @@ class Demo:
 
     # ---------------------------------------------------------------- 루프
     def run(self) -> None:
-        self.vad.start(self.on_utterance)
+        self.vad.start(self.enqueue)
         print("[demo] 준비됐다. 말해보라 — 종료는 q\n")
 
         if self.args.no_camera:
@@ -200,6 +234,10 @@ def main():
                     help="응답 여부를 무엇으로 판단할지. coarse는 긍정/부정/중립 그룹의 "
                          "확률 합을 쓴다 — 로봇 행동이 그 해상도로 결정되고 정확도도 "
                          "67.34%로 높다(8.29.3절)")
+    ap.add_argument("--hold-as-neutral", action="store_true",
+                    help="확신이 낮을 때 응답을 보류하는 대신 '중립'으로 판정한다. "
+                         "전체 정확도는 2.6%p 낮아지지만 중립 재현율이 17.9%->38.2%로 "
+                         "올라 '멀쩡한데 반응하는' 오작동이 준다(임계 0.5 기준)")
     ap.add_argument("--audio-pretrained", default=None,
                     help="config의 wav2vec2 경로를 대체한다. 서버의 변환본이 없는 맥에서는 "
                          "facebook/wav2vec2-large-xlsr-53 을 주면 HF 캐시로 돈다")

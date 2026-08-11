@@ -55,7 +55,7 @@ class EmotionEngine:
     def __init__(self, config_path: str, checkpoint: str,
                  device: str | None = None, temperature: float = 1.17,
                  threshold: float = 0.5, audio_pretrained: str | None = None,
-                 decide_on: str = "coarse"):
+                 decide_on: str = "coarse", hold_as_neutral: bool = False):
         self.cfg = load_config(Path(config_path))
         self.device = torch.device(
             device or ("cuda" if torch.cuda.is_available()
@@ -66,6 +66,13 @@ class EmotionEngine:
         # 로봇 행동이 "좋음/나쁨/보통"으로 결정된다면 coarse가 맞는 기준이다.
         assert decide_on in ("7class", "coarse")
         self.decide_on = decide_on
+        # 확신이 낮을 때 "응답 안 함" 대신 **중립으로 판정**할지.
+        # 저장된 v11 예측으로 잰 맞바꿈(임계 0.5, coarse 기준):
+        #   끄면  전체 68.79% / 중립 재현율 17.9%
+        #   켜면  전체 66.15% / 중립 재현율 38.2%
+        # 정확도를 2.6%p 잃고 중립을 두 배 잡는다. 로봇에서는 "멀쩡한데 위로하는"
+        # 오작동이 줄어드는 쪽이 나을 수 있어 선택지로 둔다.
+        self.hold_as_neutral = hold_as_neutral
 
         # ---- 준비물 검사를 **모델 로딩 전에** 한다. 백본 로딩만 수십 초라
         #      나중에 실패하면 그 시간을 통째로 버린다.
@@ -93,7 +100,8 @@ class EmotionEngine:
 
         n = sum(x.numel() for x in self.model.parameters())
         print(f"[engine] 준비 완료 — 파라미터 {n:,} · 온도 {temperature} · "
-              f"임계값 {threshold} ({decide_on} 기준)")
+              f"임계값 {threshold} ({decide_on} 기준)"
+              f"{' · 보류는 중립 처리' if hold_as_neutral else ''}")
 
     def _load_prosody_stats(self) -> dict | None:
         """학습이 운율을 정규화했다면 추론도 **같은 통계**를 써야 한다.
@@ -144,6 +152,10 @@ class EmotionEngine:
             answered, shown_coarse = coarse_conf >= self.threshold, top_coarse
         else:
             answered, shown_coarse = conf >= self.threshold, COARSE[name]
+
+        if self.hold_as_neutral and not answered:
+            # 보류하는 대신 중립으로 답한다. 로봇은 "가만히 있는" 행동을 하게 된다.
+            shown_coarse, answered = "중립", True
 
         return Result(
             emotion=KO[name],

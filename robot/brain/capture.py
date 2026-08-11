@@ -154,9 +154,8 @@ class MicVAD:
             return
         t_end = time.time()
         faces = self.faces.slice(t_start, t_end) if self.faces else []
-        # 추론은 오래 걸리므로 다른 스레드로 넘긴다 — 여기서 붙잡으면 다음 발화를 놓친다.
-        threading.Thread(
-            target=on_utterance,
-            args=(Utterance(wav=wav, faces_bgr=faces, started_at=t_start, duration=dur),),
-            daemon=True,
-        ).start()
+        # 콜백에 넘기기만 한다. **여기서 스레드를 띄우면 안 된다** — 발화가 겹칠 때
+        # Whisper/PyTorch 모델에 여러 스레드가 동시에 들어가 NaN·엉뚱한 예외·
+        # segfault가 난다(실제로 겪었다). 직렬화는 호출부(단일 워커 큐)가 책임진다.
+        on_utterance(Utterance(wav=wav, faces_bgr=faces,
+                               started_at=t_start, duration=dur))

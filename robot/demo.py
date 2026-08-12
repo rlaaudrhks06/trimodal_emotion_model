@@ -50,7 +50,8 @@ class Demo:
                                     hold_as_neutral=args.hold_as_neutral)
         self.cropper = None if args.no_camera else FaceCropper()
         self.faces = FaceBuffer()
-        self.vad = MicVAD(VADConfig(), self.faces if not args.no_camera else None)
+        self.vad = MicVAD(VADConfig(silence_sec=args.silence_sec),
+                          self.faces if not args.no_camera else None)
 
         print("[demo] Whisper 로딩...")
         import whisper
@@ -119,7 +120,11 @@ class Demo:
         with self.lock:
             self.state = "판단 중"
         try:
-            res = self.engine.infer(utt.wav, utt.faces_bgr, text)
+            # 학습은 8초까지만 봤다(ManifestEmotionDataset max_audio_seconds).
+            # 더 긴 발화를 통째로 넣으면 학습에 없던 조건이 되므로 앞 8초만 쓴다.
+            # 전사문은 위에서 **전체 오디오**로 뽑았으므로 잘리지 않는다.
+            n = int(self.vad.cfg.model_audio_sec * self.vad.cfg.sample_rate)
+            res = self.engine.infer(utt.wav[:n], utt.faces_bgr, text)
         except Exception as e:
             print(f"[demo] 추론 실패: {type(e).__name__}: {e}")
             with self.lock:
@@ -128,7 +133,7 @@ class Demo:
 
         mark = "" if res.answered else "  [보류]"
         line = (f"{res.coarse} {100*res.coarse_confidence:.0f}%  "
-                f"({res.emotion} {100*res.confidence:.0f}%){mark}  | {text[:24]}")
+                f"({res.emotion} {100*res.confidence:.0f}%){mark}  | {text}")
         print(f"[demo] {line}  ({res.latency_ms:.0f}ms · 얼굴 {len(utt.faces_bgr)}장 · "
               f"{utt.duration:.1f}초)")
         with self.lock:
@@ -169,7 +174,7 @@ class Demo:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (215, 215, 215), 1)
 
         for i, line in enumerate(log):
-            cv2.putText(frame, line, (18, h - 18 - i * 22),
+            cv2.putText(frame, line[:78], (18, h - 18 - i * 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (235, 235, 235) if i == 0 else (150, 150, 150), 1)
         return frame
@@ -234,6 +239,9 @@ def main():
                     help="응답 여부를 무엇으로 판단할지. coarse는 긍정/부정/중립 그룹의 "
                          "확률 합을 쓴다 — 로봇 행동이 그 해상도로 결정되고 정확도도 "
                          "67.34%로 높다(8.29.3절)")
+    ap.add_argument("--silence-sec", type=float, default=1.4,
+                    help="이만큼 조용하면 발화가 끝난 것으로 본다. 발표하듯 말하면 "
+                         "1.4~2.0초가 적당하고, 짧으면 문장 사이 호흡에서 잘린다")
     ap.add_argument("--hold-as-neutral", action="store_true",
                     help="확신이 낮을 때 응답을 보류하는 대신 '중립'으로 판정한다. "
                          "전체 정확도는 2.6%p 낮아지지만 중립 재현율이 17.9%->38.2%로 "

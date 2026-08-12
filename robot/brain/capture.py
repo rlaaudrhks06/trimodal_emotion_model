@@ -29,10 +29,18 @@ class VADConfig:
     # 말이라고 볼 기준 — 노이즈 플로어의 배수 + 절대 여유분.
     speech_mult: float = 2.5
     speech_floor: float = 80.0
-    # 이만큼 조용하면 발화가 끝난 것으로 본다(청크 수 × 64ms).
-    silence_chunks: int = 12
+    # 이만큼 조용하면 발화가 끝난 것으로 본다. 짧으면 문장 사이 호흡에서 끊기고,
+    # 길면 반응이 굼떠진다. 발표하듯 말하면 0.8초로는 자꾸 잘린다.
+    silence_sec: float = 1.4
     min_speech_sec: float = 0.4       # 이보다 짧으면 잡음으로 보고 버린다
-    max_speech_sec: float = 8.0       # 학습 최대 길이와 맞춘다
+    # 녹음 상한. 학습은 8초까지만 봤지만(ManifestEmotionDataset 기본값) 여기서
+    # 자르면 전사문도 같이 잘린다. 길게 받아 **전사는 전체로, 감정은 앞 8초로** 쓴다.
+    max_speech_sec: float = 30.0
+    model_audio_sec: float = 8.0      # 감정 모델에 넣을 길이(학습과 동일)
+
+    @property
+    def silence_chunks(self) -> int:
+        return max(1, int(self.silence_sec * self.sample_rate / self.chunk))
 
 
 @dataclass
@@ -52,7 +60,7 @@ class FaceBuffer:
     표정으로 읽는다.
     """
 
-    def __init__(self, seconds: float = 12.0, fps_hint: int = 15):
+    def __init__(self, seconds: float = 35.0, fps_hint: int = 15):
         self.buf = deque(maxlen=int(seconds * fps_hint) + 30)
         self.lock = threading.Lock()
 

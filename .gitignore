@@ -23,6 +23,15 @@ checkpoints_periodic/
 archived_runs/
 .DS_Store
 
+# GPU 서버 접속용 개인키. 지금은 저장소 밖(`New/tkdwl05.pem`)에 두지만, 한 번 들어오면
+# 작업 트리에서 지우는 걸로 끝나지 않는다 — 이 저장소는 얼굴 이미지가 히스토리에 남아
+# `git filter-repo`로 다시 쓰고 새로 클론해 검증한 적이 있다(이슈기록 14장).
+# 키는 그보다 나쁘다. 유출되면 파일을 지워도 키 자체를 재발급받아야 한다.
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
 # 단, 임베딩 덤프는 예외의 예외 — 발화 11,464개 × 512차원 × 4종이라
 # .npz 약 90MB, Projector용 .tsv 약 50MB다. GitHub 파일당 한도가 100MB이고
 # extract_embeddings.py로 체크포인트에서 언제든 다시 뽑을 수 있으므로 넣지 않는다.

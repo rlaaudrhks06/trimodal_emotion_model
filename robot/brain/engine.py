@@ -128,7 +128,7 @@ class EmotionEngine:
                 f"  이 config는 학습 때 운율을 정규화했으므로 추론도 같은 통계를 써야 한다.\n"
                 f"  없는 채로 돌리면 에러 없이 틀린 답이 나온다.\n\n"
                 f"  서버에서 받아올 것:\n"
-                f"    scp tta@<서버>:/data/aihub_download/trimodal_emotion_model/{p} {p}\n"
+                f"    scp <계정>@<서버>:<저장소 경로>/{p} {p}\n"
             )
         print(f"[engine] prosody 정규화 통계 적용: {p}")
         return json.loads(path.read_text(encoding="utf-8"))

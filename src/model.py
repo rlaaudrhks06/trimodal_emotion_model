@@ -15,7 +15,7 @@ from .models.audio_backbone_w2v import Wav2Vec2AudioBackbone
 from .models.visual_backbone import VisualBackbone
 from .models.text_backbone import TextBackbone
 from .fusion.hierarchical_fusion import build_fusion, mean_pool
-from .fusion.gated_prosody import ProsodyGatedFusion
+from .fusion.gated_prosody import ProsodyConcatFusion, ProsodyGatedFusion
 from .fusion.classifier import HybridClassifier
 
 
@@ -59,13 +59,18 @@ class TrimodalEmotionModel(nn.Module):
         # prosody_fusion="none"이면 게이트를 만들지 않는다(11.3.2 항목 3). 모듈 자체가
         # 없어야 체크포인트에 죽은 파라미터가 남지 않고, 운율이 정말 안 쓰이는지도
         # "가중치가 존재하지 않는다"로 보증된다.
-        if m.prosody_fusion not in ("gate", "none"):
+        if m.prosody_fusion not in ("gate", "concat", "none"):
             raise ValueError(
-                f"prosody_fusion은 'gate' 또는 'none'이어야 한다, got {m.prosody_fusion!r}"
+                f"prosody_fusion은 'gate'·'concat'·'none' 중 하나여야 한다, "
+                f"got {m.prosody_fusion!r}"
             )
-        self.use_prosody_gate = m.prosody_fusion == "gate"
-        if self.use_prosody_gate:
+        self.prosody_fusion = m.prosody_fusion
+        # 속성 이름을 셋 다 prosody_gate로 두어 호출부가 분기하지 않게 한다.
+        # (gate/concat 둘 다 (z_audio_hybrid, p_a) -> z_audio_final 서명이 같다)
+        if m.prosody_fusion == "gate":
             self.prosody_gate = ProsodyGatedFusion(hybrid_dim=hybrid_dim, prosody_dim=m.prosody_dim)
+        elif m.prosody_fusion == "concat":
+            self.prosody_gate = ProsodyConcatFusion(hybrid_dim=hybrid_dim, prosody_dim=m.prosody_dim)
         self.classifier = HybridClassifier(hybrid_dim=hybrid_dim, num_classes=m.num_classes, dropout=m.classifier_dropout)
 
         # v12 보조 헤드(11.2절). 각 브랜치가 "자기 입력에 답이 있는" 과제를 함께 풀게 한다.
@@ -198,7 +203,7 @@ class TrimodalEmotionModel(nn.Module):
         # 끈다는 정의는 바뀌지 않는다) 값이 쓰이지 않으므로 무동작이다.
         z_audio_final = (
             self.prosody_gate(z_audio_hybrid, prosody_vec)
-            if self.use_prosody_gate else z_audio_hybrid
+            if self.prosody_fusion != "none" else z_audio_hybrid
         )
 
         logits = self.classifier(z_v_final, z_audio_final, z_t_final)

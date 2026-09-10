@@ -208,11 +208,14 @@ def test_self_fusion_baseline():
           f"(융합 파라미터 hier {n_hier:,} -> self {n_self:,}, {n_self / n_hier - 1:+.1%})")
 
 
-def test_prosody_fusion_none():
-    """운율 게이트 애블레이션(11.3.2 항목 3)이 운율 경로를 정말 끊는지.
+def test_prosody_fusion_variants():
+    """운율 결합 세 갈래(11.3.2 항목 3)가 각자 약속한 대로 동작하는지.
 
-    "안 쓴다"를 모듈 유무로만 확인하면 부족하다 — 어딘가에서 여전히 읽고 있을 수 있다.
+    'none'은 모듈 유무로만 확인하면 부족하다 — 어딘가에서 여전히 읽고 있을 수 있다.
     **운율 벡터를 통째로 갈아도 로짓이 한 비트도 안 변해야** 경로가 끊긴 것이다.
+
+    'concat'은 반대로 **입력에 따라 배합이 변하지 않는가**를 본다. 그게 게이트와의
+    유일한 차이이고, 이 실험이 재려는 것이다.
     """
     cfg = load_config()
     b, t_v, t_a, t_t = 2, 6, 16, 5
@@ -226,30 +229,50 @@ def test_prosody_fusion_none():
     p1 = torch.randn(b, cfg.model.prosody_dim)
     p2 = torch.randn(b, cfg.model.prosody_dim)
 
-    gated = TrimodalEmotionModel(cfg).eval()
-    cfg.model.prosody_fusion = "none"
-    plain = TrimodalEmotionModel(cfg).eval()
+    models, n_params = {}, {}
+    for variant in ("gate", "concat", "none"):
+        cfg.model.prosody_fusion = variant
+        m = TrimodalEmotionModel(cfg).eval()
+        models[variant] = m
+        n_params[variant] = sum(p.numel() for p in m.parameters())
     cfg.model.prosody_fusion = "gate"  # 다른 테스트에 새지 않게 되돌린다
 
-    assert hasattr(gated, "prosody_gate")
-    assert not hasattr(plain, "prosody_gate"), "none인데 게이트 모듈이 남아 있다"
+    assert not hasattr(models["none"], "prosody_gate"), "none인데 결합 모듈이 남아 있다"
 
-    # 파라미터 차이가 게이트 크기와 정확히 같은가 (dims에서 유도 — 상수를 박지 않는다)
+    # 파라미터 예산을 dims에서 유도해 확인한다 — 상수를 박으면 갈라진다.
     hybrid, pdim = cfg.model.d_model * 2, cfg.model.prosody_dim
-    expect = (pdim * hybrid + hybrid) + ((hybrid + pdim) * hybrid + hybrid)
-    delta = (sum(p.numel() for p in gated.parameters())
-             - sum(p.numel() for p in plain.parameters()))
-    assert delta == expect, f"게이트 파라미터 {delta:,} != 기대 {expect:,}"
+    want_gate = (pdim * hybrid + hybrid) + ((hybrid + pdim) * hybrid + hybrid)
+    want_concat = (hybrid + pdim) * hybrid + hybrid
+    assert n_params["gate"] - n_params["none"] == want_gate, "gate 파라미터가 기대와 다르다"
+    assert n_params["concat"] - n_params["none"] == want_concat, "concat 파라미터가 기대와 다르다"
 
+    outs = {}
     with torch.no_grad():
-        a = plain(prosody_vec=p1, **common)
-        c = plain(prosody_vec=p2, **common)
-        g1 = gated(prosody_vec=p1, **common)
-        g2 = gated(prosody_vec=p2, **common)
-    assert torch.equal(a, c), "prosody_fusion='none'인데 운율이 로짓을 바꾼다 — 경로가 남아 있다"
-    assert not torch.allclose(g1, g2), "게이트가 켜져 있는데 운율이 로짓에 영향을 안 준다"
+        for v, m in models.items():
+            outs[v] = (m(prosody_vec=p1, **common), m(prosody_vec=p2, **common))
 
-    print(f"[smoke test] prosody_fusion='none' PASSED (게이트 파라미터 {expect:,}개 제거)")
+    # none: 운율이 로짓에 닿지 않는다.
+    assert torch.equal(*outs["none"]), \
+        "prosody_fusion='none'인데 운율이 로짓을 바꾼다 — 경로가 남아 있다"
+    # gate/concat: 운율이 로짓에 닿는다(닿지 않으면 실험 자체가 성립하지 않는다).
+    for v in ("gate", "concat"):
+        assert not torch.allclose(*outs[v]), f"{v}인데 운율이 로짓에 영향을 안 준다"
+
+    # concat의 정의: 배합비가 입력에 의존하지 않는다. 같은 p_a에 z만 바꿔도 운율
+    # 기여분은 그대로여야 한다 — 선형이므로 차이가 상쇄된다. 게이트는 그렇지 않다.
+    hy1, hy2 = torch.randn(b, hybrid), torch.randn(b, hybrid)
+    cm = models["concat"].prosody_gate
+    gm = models["gate"].prosody_gate
+    with torch.no_grad():
+        c_eff = (cm(hy1, p1) - cm(hy1, p2)) - (cm(hy2, p1) - cm(hy2, p2))
+        g_eff = (gm(hy1, p1) - gm(hy1, p2)) - (gm(hy2, p1) - gm(hy2, p2))
+    assert torch.allclose(c_eff, torch.zeros_like(c_eff), atol=1e-5), \
+        "concat인데 운율 기여가 오디오 표현에 의존한다 — 선형 결합이 아니다"
+    assert not torch.allclose(g_eff, torch.zeros_like(g_eff), atol=1e-5), \
+        "gate인데 운율 기여가 오디오 표현과 무관하다 — 게이팅이 죽어 있다"
+
+    print(f"[smoke test] prosody_fusion 3갈래 PASSED "
+          f"(gate {want_gate:,} · concat {want_concat:,} · none 0)")
 
 
 if __name__ == "__main__":
@@ -257,4 +280,4 @@ if __name__ == "__main__":
     test_modality_dropout_runs()
     test_fusion_order()
     test_self_fusion_baseline()
-    test_prosody_fusion_none()
+    test_prosody_fusion_variants()

@@ -25,6 +25,12 @@
 
 [폐기] 각 항목의 [폐기] 주석 참고. 프로젝트가 끝나면 전체가 죽는다.
 """
+# **파이썬 3.9 호환 필수.** 훅은 셸과 다른 PATH로 실행돼 /usr/bin/python3(3.9)를
+# 잡는다. PEP 604(`str | None`)는 3.10+에서만 런타임 동작하므로 이 줄이 없으면
+# import 시점에 TypeError로 죽고, **exit 2가 아니라 1이라 도구가 통과한다.**
+# [사건] 실제로 그렇게 등록됐고 가드가 아무것도 막지 않았다. 로그를 붙여서야 알았다.
+from __future__ import annotations
+
 import json
 import re
 import subprocess

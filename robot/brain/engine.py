@@ -36,6 +36,14 @@ COARSE = {"happy": "긍정", "surprise": "긍정",
           "angry": "부정", "disgust": "부정", "fear": "부정", "sad": "부정",
           "neutral": "중립"}
 
+# 온도와 임계값의 **정본**. 문서에 실린 수치(ECE 0.0226, 임계 0.5에서 응답률 40.4% ·
+# 응답한 것의 정확도 60.66%)가 이 두 값에서 나온 것이므로, 다른 곳에서 같은 값을 다시
+# 적으면 반드시 한쪽만 고쳐진다 — 이 프로젝트가 반복해서 당한 유형이다
+# (제안서 3.3.2: "정본은 하나로 두고 나머지는 유도한다").
+# 배포 검증(`scripts/export_onnx.py`)도 이 값을 가져다 쓴다.
+TEMPERATURE_DEFAULT = 1.17   # val에서 적합시킨 온도 스케일링 값(8.30.5절)
+THRESHOLD_DEFAULT = 0.5      # 응답률 40.4% / 정확도 60.66% 지점
+
 
 @dataclass
 class Result:
@@ -53,8 +61,8 @@ class Result:
 
 class EmotionEngine:
     def __init__(self, config_path: str, checkpoint: str,
-                 device: str | None = None, temperature: float = 1.17,
-                 threshold: float = 0.5, audio_pretrained: str | None = None,
+                 device: str | None = None, temperature: float = TEMPERATURE_DEFAULT,
+                 threshold: float = THRESHOLD_DEFAULT, audio_pretrained: str | None = None,
                  decide_on: str = "coarse", hold_as_neutral: bool = False):
         self.cfg = load_config(Path(config_path))
         self.device = torch.device(

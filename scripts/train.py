@@ -4,10 +4,12 @@
     python scripts/train.py --config configs/config.yaml
 """
 import argparse
+import json
 import os
 import random
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -304,6 +306,25 @@ def main():
 
     ckpt_dir = Path(train_cfg["checkpoint_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── 이 실행의 신원을 체크포인트 옆에 남긴다.
+    #
+    # 왜: 체크포인트는 state_dict 뿐이라 **어느 시드·어느 코드로 나온 것인지** 알 수 없다.
+    # 시드를 2~3개 돌리는 계획(효과 크기가 1.3%p 검출 한계에 가깝다)에서는 체크포인트
+    # 셋이 파일 이름 말고는 구분되지 않는다. 평가 JSON에도 시드가 안 실린다 —
+    # evaluate.py는 학습 시드를 모르기 때문이다.
+    #
+    # 체크포인트 형식(bare state_dict)은 건드리지 않는다. 로딩부가 다섯 군데라
+    # 형식을 바꾸면 그중 하나가 반드시 빠진다. 옆에 파일로 둔다.
+    from src.eval_report import code_provenance
+    (ckpt_dir / "run_info.json").write_text(json.dumps({
+        "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "seed": args.seed,
+        "config": args.config,
+        "batch_size": train_cfg["batch_size"],
+        **code_provenance(),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[train] 실행 정보 기록: {ckpt_dir / 'run_info.json'} (seed={args.seed})")
 
     # 최고 성능(best_model.pt)과 별개로, N에폭마다 스냅샷을 따로 저장해둔다 —
     # 나중에 특정 에폭 시점으로 되돌아가 비교하고 싶을 때(예: 과적합 시작 지점 확인) 필요.

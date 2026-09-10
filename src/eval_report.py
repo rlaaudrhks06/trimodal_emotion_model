@@ -10,6 +10,8 @@ F1, 혼동 행렬)는 터미널 출력으로만 확인하고 어디에도 파일
 평가 1회를 온전히 재현·검증할 수 있도록 설정(config/checkpoint 경로)까지 함께 기록한다.
 """
 import json
+import platform
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -107,6 +109,40 @@ def print_and_collect(all_labels: list, all_preds: list, title: str = "") -> dic
     }
 
 
+def code_provenance() -> dict:
+    """이 결과를 낸 **코드의 신원**을 기록한다. 없으면 수치를 코드에 못 묶는다.
+
+    왜 필요한가: `results/eval/*.json`은 config·checkpoint 경로는 남겼지만 **어느
+    코드**가 그 수치를 냈는지는 기록한 적이 없다. 지금처럼 애블레이션 4종을 시드
+    2~3개로 돌리는 동안 코드가 계속 바뀌면(오늘만 해도 fusion_order·fusion_type·
+    prosody_fusion이 새로 들어갔다) 같은 config의 두 JSON을 구분할 방법이 없어진다.
+
+    ML 재현성 표준이 요구하는 최소 항목이 코드 커밋·설정·시드·환경이다. 그리고
+    "체크리스트가 아니라 **기본 동작**이 되게 진입점에 배선하라"는 것이 그 표준의
+    권고다 — 그래서 규칙으로 적지 않고 여기서 자동으로 남긴다.
+
+    `git_dirty`가 특히 중요하다. 커밋 해시가 있어도 작업 트리가 더러웠으면 그
+    해시로는 재현되지 않는다. **재현 불가를 조용히 넘기지 않으려고** 같이 남긴다.
+    """
+    def _git(*args: str) -> str | None:
+        try:
+            r = subprocess.run(["git", *args], capture_output=True, text=True,
+                               timeout=5, cwd=Path(__file__).resolve().parent.parent)
+        except Exception:
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    commit = _git("rev-parse", "--short", "HEAD")
+    status = _git("status", "--porcelain")
+    return {
+        "git_commit": commit,                       # None이면 git 밖에서 돌린 것
+        "git_branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+        "git_dirty": bool(status) if status is not None else None,
+        "python": platform.python_version(),
+        "torch": getattr(__import__("torch"), "__version__", None),
+    }
+
+
 def save_eval_result(
     metrics: dict, name: str, manifest: str, models: list[dict],
     out_dir: str | Path | None = None, extra: dict | None = None,
@@ -126,6 +162,7 @@ def save_eval_result(
         "evaluated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "manifest": manifest,
         "models": models,
+        **code_provenance(),
         **metrics,
     }
     if extra:

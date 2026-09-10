@@ -38,6 +38,67 @@ id_ed25519*
 # 커밋되면 승인이 영구화되어 게이트가 무력해진다.
 .claude/.rule-change-approved
 
+# ─────────────────────────────────────────────────────────────────────────
+# 확장자 기준 방어 — 폴더 규칙만으로는 다른 위치에 만든 파일이 빠져나간다
+# ─────────────────────────────────────────────────────────────────────────
+
+# 이미지·문서 바이너리. 저장소를 무겁게 하고, 대부분 스크립트로 다시 만들 수 있다.
+# docs/assets/*.png는 build_architecture_diagrams.py, dashboard는 build_dashboard.py.
+# [사건] 예전에 docs/assets에 AI Hub 인물 사진(아동 포함)이 들어가 히스토리를
+#        filter-repo로 다시 써야 했다. 확장자로 막으면 같은 실수가 반복되지 않는다.
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+
+# 모델·대용량 산출물. 지금은 checkpoints/·models/·results/embeddings/ 폴더 규칙으로만
+# 막혀 있어 다른 경로에 만들면 통과한다.
+*.onnx
+*.npz
+*.safetensors
+*.bin
+*.ckpt
+*.pth
+
+# 원본 미디어와 묶음 파일. AI Hub 파생물이라 제3자 제공 금지 대상이다.
+*.wav
+*.mp4
+*.mkv
+*.zip
+*.tar
+*.tar.*
+*.tgz
+
+# ─────────────────────────────────────────────────────────────────────────
+# 심볼릭 링크 대응
+#
+# **`foo/`는 디렉터리만 매칭한다.** 심볼릭 링크는 git에게 디렉터리가 아니라
+# 링크(mode 120000)라 위의 슬래시 패턴을 전부 빠져나간다.
+#
+# [사건] worktree를 만들면서 .venv·models·checkpoints·data·results/embeddings를
+#        링크로 걸었더니 5개가 전부 미추적으로 떴다. `git add -A` 한 번이면
+#        /Users/<사용자>/... 절대경로가 public 저장소에 커밋될 상황이었다.
+#        당시엔 로컬 .git/info/exclude로 막았는데, 그건 서버에 따라가지 않아
+#        clone 후 worktree를 만들면 그대로 재발한다. 그래서 여기에 적는다.
+# ─────────────────────────────────────────────────────────────────────────
+.venv
+models
+checkpoints
+checkpoints_periodic
+archived_runs
+results/embeddings
+results/server_logs
+
+# `data`는 통째로 무시한다. 하위 규칙(data/raw 등)만 있으면 worktree가 **data를
+# 통째로 링크**할 때 빠져나간다. data/ 아래에 추적 중인 파일은 0개임을 확인했고,
+# 매니페스트·전처리 결과는 전부 AI Hub 파생물이라 애초에 올리면 안 된다.
+data
+data/raw
+data/processed
+data/processed_full
+data/feature_cache
+
 # 단, 임베딩 덤프는 예외의 예외 — 발화 11,464개 × 512차원 × 4종이라
 # .npz 약 90MB, Projector용 .tsv 약 50MB다. GitHub 파일당 한도가 100MB이고
 # extract_embeddings.py로 체크포인트에서 언제든 다시 뽑을 수 있으므로 넣지 않는다.
@@ -57,6 +118,13 @@ models/
 
 # 문서 PDF는 md에서 재생성한다(scripts/build_docs_pdf.py) — 통합기록만 6.7MB라
 # 갱신할 때마다 커밋하면 저장소가 금방 무거워진다. md와 assets/만 추적한다.
+# 문서는 저장소에 올리지 않는다(사용자 결정 2026-09-11). 전부 로컬에 남아 있고,
+# 통합기록·이슈기록에는 실패와 오판이 그대로 적혀 있어 공개를 전제로 쓴 글이 아니다.
+# 도면(assets/*.png)은 build_architecture_diagrams.py로 다시 만들 수 있다.
+#
+# **디렉터리 통째로 막는다.** `git rm --cached docs`로 추적만 해제하면 미추적 상태로
+# 남아 `git add -A` 한 번에 도로 올라간다 — 실제로 그 상태였다.
+docs/
 docs/*.pdf
 docs/*.html
 

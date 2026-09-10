@@ -208,8 +208,53 @@ def test_self_fusion_baseline():
           f"(융합 파라미터 hier {n_hier:,} -> self {n_self:,}, {n_self / n_hier - 1:+.1%})")
 
 
+def test_prosody_fusion_none():
+    """운율 게이트 애블레이션(11.3.2 항목 3)이 운율 경로를 정말 끊는지.
+
+    "안 쓴다"를 모듈 유무로만 확인하면 부족하다 — 어딘가에서 여전히 읽고 있을 수 있다.
+    **운율 벡터를 통째로 갈아도 로짓이 한 비트도 안 변해야** 경로가 끊긴 것이다.
+    """
+    cfg = load_config()
+    b, t_v, t_a, t_t = 2, 6, 16, 5
+    torch.manual_seed(0)
+    common = dict(
+        mel_spec=torch.randn(b, t_a, cfg.audio_n_mels),
+        frames=torch.rand(b, t_v, 3, cfg.visual_face_size, cfg.visual_face_size),
+        input_ids=torch.randint(0, 1000, (b, t_t)),
+        attention_mask=torch.ones(b, t_t, dtype=torch.long),
+    )
+    p1 = torch.randn(b, cfg.model.prosody_dim)
+    p2 = torch.randn(b, cfg.model.prosody_dim)
+
+    gated = TrimodalEmotionModel(cfg).eval()
+    cfg.model.prosody_fusion = "none"
+    plain = TrimodalEmotionModel(cfg).eval()
+    cfg.model.prosody_fusion = "gate"  # 다른 테스트에 새지 않게 되돌린다
+
+    assert hasattr(gated, "prosody_gate")
+    assert not hasattr(plain, "prosody_gate"), "none인데 게이트 모듈이 남아 있다"
+
+    # 파라미터 차이가 게이트 크기와 정확히 같은가 (dims에서 유도 — 상수를 박지 않는다)
+    hybrid, pdim = cfg.model.d_model * 2, cfg.model.prosody_dim
+    expect = (pdim * hybrid + hybrid) + ((hybrid + pdim) * hybrid + hybrid)
+    delta = (sum(p.numel() for p in gated.parameters())
+             - sum(p.numel() for p in plain.parameters()))
+    assert delta == expect, f"게이트 파라미터 {delta:,} != 기대 {expect:,}"
+
+    with torch.no_grad():
+        a = plain(prosody_vec=p1, **common)
+        c = plain(prosody_vec=p2, **common)
+        g1 = gated(prosody_vec=p1, **common)
+        g2 = gated(prosody_vec=p2, **common)
+    assert torch.equal(a, c), "prosody_fusion='none'인데 운율이 로짓을 바꾼다 — 경로가 남아 있다"
+    assert not torch.allclose(g1, g2), "게이트가 켜져 있는데 운율이 로짓에 영향을 안 준다"
+
+    print(f"[smoke test] prosody_fusion='none' PASSED (게이트 파라미터 {expect:,}개 제거)")
+
+
 if __name__ == "__main__":
     test_forward_shapes()
     test_modality_dropout_runs()
     test_fusion_order()
     test_self_fusion_baseline()
+    test_prosody_fusion_none()

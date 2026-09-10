@@ -56,7 +56,16 @@ class TrimodalEmotionModel(nn.Module):
         )
 
         hybrid_dim = m.d_model * 2  # [z_cross_*, mean(X_*)] concat
-        self.prosody_gate = ProsodyGatedFusion(hybrid_dim=hybrid_dim, prosody_dim=m.prosody_dim)
+        # prosody_fusion="none"이면 게이트를 만들지 않는다(11.3.2 항목 3). 모듈 자체가
+        # 없어야 체크포인트에 죽은 파라미터가 남지 않고, 운율이 정말 안 쓰이는지도
+        # "가중치가 존재하지 않는다"로 보증된다.
+        if m.prosody_fusion not in ("gate", "none"):
+            raise ValueError(
+                f"prosody_fusion은 'gate' 또는 'none'이어야 한다, got {m.prosody_fusion!r}"
+            )
+        self.use_prosody_gate = m.prosody_fusion == "gate"
+        if self.use_prosody_gate:
+            self.prosody_gate = ProsodyGatedFusion(hybrid_dim=hybrid_dim, prosody_dim=m.prosody_dim)
         self.classifier = HybridClassifier(hybrid_dim=hybrid_dim, num_classes=m.num_classes, dropout=m.classifier_dropout)
 
         # v12 보조 헤드(11.2절). 각 브랜치가 "자기 입력에 답이 있는" 과제를 함께 풀게 한다.
@@ -184,7 +193,13 @@ class TrimodalEmotionModel(nn.Module):
         z_v_final = torch.cat([z_cross_v, v_pool], dim=-1)
         z_t_final = torch.cat([z_cross_t, t_pool], dim=-1)
         z_audio_hybrid = torch.cat([z_cross_a, a_pool], dim=-1)
-        z_audio_final = self.prosody_gate(z_audio_hybrid, prosody_vec)
+        # prosody_fusion="none"이면 운율이 모델에 닿는 경로가 아예 없다.
+        # 모달리티 드롭아웃이 prosody_vec을 0으로 만드는 것은 그대로 두지만(오디오를
+        # 끈다는 정의는 바뀌지 않는다) 값이 쓰이지 않으므로 무동작이다.
+        z_audio_final = (
+            self.prosody_gate(z_audio_hybrid, prosody_vec)
+            if self.use_prosody_gate else z_audio_hybrid
+        )
 
         logits = self.classifier(z_v_final, z_audio_final, z_t_final)
         if not return_aux:

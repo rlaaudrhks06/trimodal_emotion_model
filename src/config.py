@@ -37,6 +37,10 @@ class ModelConfig:
     # *교차*인지, 아니면 그냥 추가 용량인지 가른다. MulT 원논문의 LF-Transformer와
     # 같은 구성이다(참고문헌 2번 §4.3).
     fusion_type: str = "hierarchical"
+    # 운율 결합 방식(11.3.2 항목 3). "gate"(기본)=설계 v3 §5.2의 게이트, v1~v12b가 쓴 것.
+    # "none"=운율을 아예 안 쓴다 — 8.30.3에서 소음 조건 기여가 0으로 나왔는데
+    # 깨끗한 조건에서도 무용한지 가른다. 끄면 학습 파라미터가 273,408개 줄어든다.
+    prosody_fusion: str = "gate"
 
 
 @dataclass

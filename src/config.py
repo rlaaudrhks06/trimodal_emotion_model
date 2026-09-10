@@ -32,6 +32,11 @@ class ModelConfig:
     # "audio_text"(기본)가 v1~v12b 전체가 쓴 순서라 값을 안 주면 동작이 완전히 같다.
     # 고를 수 있는 값과 실험 의도는 src/fusion/hierarchical_fusion.py 참고.
     fusion_order: str = "audio_text"
+    # 융합 방식(11.3.2 항목 2). "hierarchical"(기본)=교차 어텐션, v1~v12b가 쓴 것.
+    # "self"=모달리티별 self-attention 베이스라인 — 교차 어텐션이 하는 일이 정말
+    # *교차*인지, 아니면 그냥 추가 용량인지 가른다. MulT 원논문의 LF-Transformer와
+    # 같은 구성이다(참고문헌 2번 §4.3).
+    fusion_type: str = "hierarchical"
 
 
 @dataclass

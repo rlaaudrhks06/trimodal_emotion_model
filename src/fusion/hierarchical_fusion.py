@@ -148,6 +148,90 @@ class HierarchicalCrossAttentionFusion(nn.Module):
         return z["v"], z["a"], z["t"]
 
 
+class SelfAttentionFusion(nn.Module):
+    """교차 어텐션 대신 **모달리티별 self-attention**을 쓰는 베이스라인(11.3.2 항목 2).
+
+    묻는 것: 교차 어텐션이 하는 일이 정말 *교차*인가, 아니면 그냥 추가 용량인가.
+
+    **왜 MLP가 아니라 self-attention인가.** MulT 원논문(참고문헌 2번)의 애블레이션이
+    쓴 late fusion 베이스라인이 정확히 이것이다 — *"a late-fusion transformer that
+    feature-wise concatenates the last elements of three self-attention transformers"*
+    (Tsai et al., ACL 2019, §4.3). 그리고 §4.2에 *"For fair comparisons, we control
+    the number of parameters of all models to be approximately the same"*가 붙어 있다.
+
+    MLP로 바꾸면 바뀌는 변수가 둘이 된다 — 모달 간 섞임이 사라지는 것과, 블록이
+    어텐션이 아니게 되는 것. 그러면 성능이 떨어져도 어느 쪽 때문인지 못 가른다.
+    self-attention은 블록 구조·차원·연산이 전부 같고 **Q와 KV가 같은 모달리티에서
+    오느냐만** 다르다. "한 번에 하나씩만 바꾼다"가 지켜진다.
+
+    구현도 그래서 `StackedCrossAttention`을 그대로 쓴다(q_seq == kv_seq). 새 블록을
+    짜면 미묘하게 달라질 수 있는데, 같은 클래스를 쓰면 그럴 여지가 없다.
+
+    **파라미터는 정확히 같지 않다.** 계층 융합은 블록 4개(1단계 2 + 2단계 2)인데
+    이쪽은 모달리티당 1개씩 3개다. 실측(config_si_w2v vs config_fusion_self):
+
+        융합      3,159,040 -> 2,369,280   (-789,760)
+        학습 전체 8,760,071 -> 7,970,311   (-9.02%)
+
+    MulT도 "approximately the same"이라고 했다. 해석 주의: self가 **이기거나 비기면**
+    파라미터가 적은데도 그런 것이라 결론이 더 강해지고, **지면** 이 9%를 감안해야 한다.
+    """
+
+    def __init__(
+        self, d_model: int, n_heads: int, ffn_dim: int, n_layers: int = 1,
+        dropout: float = 0.1, drop_path: float = 0.0,
+    ):
+        super().__init__()
+
+        def block() -> StackedCrossAttention:
+            return StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
+
+        self.sa_visual = block()
+        self.sa_audio = block()
+        self.sa_text = block()
+
+    def forward(
+        self,
+        x_v: torch.Tensor,
+        x_a: torch.Tensor,
+        x_t: torch.Tensor,
+        v_mask: torch.Tensor | None = None,
+        a_mask: torch.Tensor | None = None,
+        t_mask: torch.Tensor | None = None,
+    ):
+        # 반환 형태(v, a, t)와 각 [B, d_model]은 계층 융합과 동일하다 —
+        # 하이브리드 결합·운율 게이트·분류기를 손대지 않기 위해서다.
+        return (
+            mean_pool(self.sa_visual(x_v, x_v, kv_key_padding_mask=v_mask), v_mask),
+            mean_pool(self.sa_audio(x_a, x_a, kv_key_padding_mask=a_mask), a_mask),
+            mean_pool(self.sa_text(x_t, x_t, kv_key_padding_mask=t_mask), t_mask),
+        )
+
+
+def build_fusion(
+    fusion_type: str, d_model: int, n_heads: int, ffn_dim: int, n_layers: int = 1,
+    dropout: float = 0.1, drop_path: float = 0.0, order: str = "audio_text",
+) -> nn.Module:
+    """config의 `fusion_type`으로 융합 모듈을 고른다.
+
+    `fusion_order`는 계층 융합에만 의미가 있다. self에서 order를 바꿔 놓고 "실험했다"고
+    믿는 것이 이 프로젝트가 반복해서 당한 유형이라, 조용히 무시하지 않고 멈춘다.
+    """
+    if fusion_type == "hierarchical":
+        return HierarchicalCrossAttentionFusion(
+            d_model, n_heads, ffn_dim, n_layers, dropout, drop_path, order=order
+        )
+    if fusion_type == "self":
+        if order != "audio_text":
+            raise ValueError(
+                f"fusion_type='self'에는 fusion_order가 의미가 없는데 {order!r}가 지정됐다. "
+                f"self는 모달리티끼리 섞지 않으므로 1단계/2단계 구분 자체가 없다. "
+                f"order를 지우거나 fusion_type을 'hierarchical'로 둘 것."
+            )
+        return SelfAttentionFusion(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
+    raise ValueError(f"fusion_type은 'hierarchical' 또는 'self'여야 한다, got {fusion_type!r}")
+
+
 def _remap_legacy_keys(module, state_dict, prefix, local_metadata, strict,
                        missing_keys, unexpected_keys, error_msgs):
     """모듈 이름을 역할 기반으로 바꾸기 전(v1~v12b) 체크포인트의 키를 흡수한다.

@@ -14,7 +14,7 @@ from .models.audio_backbone import AudioBackbone
 from .models.audio_backbone_w2v import Wav2Vec2AudioBackbone
 from .models.visual_backbone import VisualBackbone
 from .models.text_backbone import TextBackbone
-from .fusion.hierarchical_fusion import HierarchicalCrossAttentionFusion, mean_pool
+from .fusion.hierarchical_fusion import build_fusion, mean_pool
 from .fusion.gated_prosody import ProsodyGatedFusion
 from .fusion.classifier import HybridClassifier
 
@@ -48,7 +48,8 @@ class TrimodalEmotionModel(nn.Module):
             dropout=m.text_dropout, freeze_layers=m.text_freeze_layers,
         )
 
-        self.fusion = HierarchicalCrossAttentionFusion(
+        self.fusion = build_fusion(
+            fusion_type=m.fusion_type,
             d_model=m.d_model, n_heads=m.n_heads, ffn_dim=m.ffn_dim,
             n_layers=1, dropout=m.cross_attn_dropout, drop_path=m.cross_attn_drop_path,
             order=m.fusion_order,

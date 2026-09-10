@@ -145,7 +145,71 @@ def test_fusion_order():
     print("[smoke test] fusion order (3순서·비무동작·v11 회귀·옛키 로드) PASSED")
 
 
+def test_self_fusion_baseline():
+    """late fusion 베이스라인(11.3.2 항목 2)이 정말 모달 간 섞임이 없는지.
+
+    ②가 이 테스트의 핵심이다. "self-attention이라 안 섞인다"는 주장인데, 배선을
+    잘못하면 섞이면서도 형태는 맞아 조용히 통과한다. 주장을 그대로 재는 쪽을 택했다 —
+    **다른 모달리티 입력을 통째로 바꿔도 내 출력이 한 비트도 안 변해야 한다.**
+    """
+    from src.fusion.hierarchical_fusion import (
+        HierarchicalCrossAttentionFusion, SelfAttentionFusion, build_fusion,
+    )
+
+    torch.manual_seed(0)
+    d, b, t_v, t_a, t_t = 32, 2, 5, 9, 4
+    kw = dict(d_model=d, n_heads=4, ffn_dim=64)
+    x_v, x_a, x_t = torch.randn(b, t_v, d), torch.randn(b, t_a, d), torch.randn(b, t_t, d)
+
+    fusion = build_fusion("self", **kw).eval()
+    assert isinstance(fusion, SelfAttentionFusion)
+
+    # ① 형태가 계층 융합과 같다 — 분류기·운율 게이트를 손대지 않았다는 뜻.
+    with torch.no_grad():
+        z_v, z_a, z_t = fusion(x_v, x_a, x_t)
+    assert z_v.shape == z_a.shape == z_t.shape == (b, d), f"{z_v.shape}"
+
+    # ② 모달 간 섞임이 없다: 오디오·텍스트를 통째로 갈아도 z_v가 그대로여야 한다.
+    with torch.no_grad():
+        z_v2, _, _ = fusion(x_v, torch.randn(b, t_a, d), torch.randn(b, t_t, d))
+    assert torch.equal(z_v, z_v2), "self 융합인데 다른 모달리티가 z_v를 바꾼다 — 섞이고 있다"
+
+    # ②′ 대조: 계층 융합은 반드시 섞여야 한다(안 섞이면 그쪽이 고장난 것이다).
+    hier = build_fusion("hierarchical", **kw).eval()
+    with torch.no_grad():
+        h1, _, _ = hier(x_v, x_a, x_t)
+        h2, _, _ = hier(x_v, torch.randn(b, t_a, d), torch.randn(b, t_t, d))
+    assert not torch.allclose(h1, h2), "계층 융합인데 다른 모달리티가 z_v에 영향을 안 준다"
+
+    # ③ 파라미터 차이가 문서에 적은 대로 블록 4개 -> 3개인가.
+    n_self = sum(p.numel() for p in fusion.parameters())
+    n_hier = sum(p.numel() for p in hier.parameters())
+    assert n_hier == n_self * 4 // 3, f"블록 수 가정이 깨졌다: hier {n_hier} vs self {n_self}"
+
+    # ④ self에 fusion_order를 주면 조용히 무시하지 말고 멈춰야 한다.
+    try:
+        build_fusion("self", order="audio_visual", **kw)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("self + fusion_order 조합이 조용히 통과했다")
+
+    # ⑤ 패딩 위치가 결과에 섞이지 않는가 — 유효 구간만 넣은 것과 같아야 한다.
+    short = torch.randn(1, 3, d)
+    padded = torch.cat([short, torch.randn(1, 4, d)], dim=1)
+    mask = torch.zeros(1, 7, dtype=torch.bool)
+    mask[0, 3:] = True  # True=패딩
+    with torch.no_grad():
+        _, _, z_pad = fusion(x_v[:1], x_a[:1], padded, t_mask=mask)
+        _, _, z_ref = fusion(x_v[:1], x_a[:1], short)
+    assert torch.allclose(z_pad, z_ref, atol=1e-6), "패딩이 결과에 새어 들어간다"
+
+    print(f"[smoke test] self fusion 베이스라인 PASSED "
+          f"(융합 파라미터 hier {n_hier:,} -> self {n_self:,}, {n_self / n_hier - 1:+.1%})")
+
+
 if __name__ == "__main__":
     test_forward_shapes()
     test_modality_dropout_runs()
     test_fusion_order()
+    test_self_fusion_baseline()

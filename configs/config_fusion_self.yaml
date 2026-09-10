@@ -1,0 +1,91 @@
+# v13b — late fusion 베이스라인. v11(config_si_w2v.yaml)에서 **fusion_type 하나만** 바꾼다.
+#
+# 묻는 것(통합기록 11.3.2 항목 2): 교차 어텐션이 하는 일이 정말 *교차*인가,
+# 아니면 그냥 추가 용량인가. 설계 v3의 핵심 요소인데 한 번도 대조군을 둔 적이 없다.
+#
+# 구성 근거 — MulT 원논문(참고문헌 2번)의 애블레이션과 같은 방식이다:
+#   "a late-fusion transformer that feature-wise concatenates the last elements of
+#    three self-attention transformers"                      (Tsai et al., ACL 2019 §4.3)
+#   "For fair comparisons, we control the number of parameters of all models to be
+#    approximately the same."                                                    (§4.2)
+#
+# MLP가 아니라 self-attention인 이유: MLP로 바꾸면 바뀌는 변수가 둘이 된다(모달 간
+# 섞임이 사라지는 것 + 블록이 어텐션이 아니게 되는 것). self-attention은 블록 구조·
+# 차원·연산이 전부 같고 Q와 KV가 같은 모달리티에서 오느냐만 다르다.
+#
+# MulT가 같은 애블레이션에서 잰 값(unaligned CMU-MOSEI, Acc7):
+#   LF-Transformer 47.9  ->  MulT 50.7   (교차 어텐션 기여 +2.8%p)
+# LPGNet은 inter-modal attention 제거 시 -1.77%p를 보고한다.
+#
+# **시드를 2~3개 돌릴 것.** 선행 연구 효과 크기가 1.8~2.8%p인데 우리 유의 판정 하한이
+# 1.3%p다(8.29.5절). 단일 실행으로는 겨우 잡히는 크기라, 1%p대가 나오면 v11-v12b 때와
+# 똑같이 "구분 안 됨"으로 끝난다. 처음부터 예산에 넣는다.
+#
+# 파라미터가 정확히 같지는 않다: 블록 4개(교차) -> 3개(모달리티당 1개). 실측값이다.
+#   융합       3,159,040 -> 2,369,280  (-789,760)
+#   학습 전체  8,760,071 -> 7,970,311  (-9.02%)
+# self가 이기거나 비기면 파라미터가 적은데도 그런 것이라 결론이 더 강해지고,
+# 지면 이 9%를 감안해야 한다.
+#
+# 평가:
+#   python scripts/evaluate.py --config configs/config_fusion_self.yaml \
+#       --checkpoint checkpoints_fusion_self/best_model.pt \
+#       --save-as v13b --save-predictions
+#
+# --save-predictions는 선택이 아니다(8.29.5절) — v11과 v12b를 지금도 짝지어 검정
+# 못 하는 이유가 그것을 저장하지 않아서다.
+
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 7
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  cross_attn_drop_path: 0.1
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 12
+  visual_freeze_layers: 9
+  # ← v11과 다른 유일한 설정. fusion_order는 self에 의미가 없어 지정하면 멈춘다.
+  fusion_type: "self"
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  backbone: "wav2vec2"
+  pretrained_model: "models/wav2vec2-large-xlsr-53"
+  w2v_layer: 12
+  w2v_freeze: true
+  sample_rate: 16000
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  batch_size: 128
+  epochs: 40
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+
+  train_manifest: "data/manifests_si/train.csv"
+  val_manifest: "data/manifests_si/val.csv"
+  test_manifest: "data/manifests_si/test.csv"
+  prosody_stats_path: "data/prosody_stats_train_si.json"
+
+  checkpoint_dir: "checkpoints_fusion_self"
+  periodic_checkpoint_dir: "checkpoints_periodic_fusion_self"
+  checkpoint_interval: 20

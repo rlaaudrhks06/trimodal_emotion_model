@@ -28,6 +28,23 @@ class ModelConfig:
     # v12 보조 헤드(11.2절)의 은닉 차원. 0(기본)이면 헤드를 아예 만들지 않아
     # v1~v11과 파라미터 수까지 완전히 동일하다. 보조 라벨 학습을 켤 때만 값을 준다.
     aux_head_dim: int = 0
+    # 계층적 융합에서 **1단계에 들어가는 두 모달리티**(11.3.2 항목 1).
+    # "audio_text"(기본)가 v1~v12b 전체가 쓴 순서라 값을 안 주면 동작이 완전히 같다.
+    # 고를 수 있는 값과 실험 의도는 src/fusion/hierarchical_fusion.py 참고.
+    fusion_order: str = "audio_text"
+    # 융합 방식(11.3.2 항목 2). "hierarchical"(기본)=교차 어텐션, v1~v12b가 쓴 것.
+    # "self"=모달리티별 self-attention 베이스라인 — 교차 어텐션이 하는 일이 정말
+    # *교차*인지, 아니면 그냥 추가 용량인지 가른다. MulT 원논문의 LF-Transformer와
+    # 같은 구성이다(참고문헌 2번 §4.3).
+    fusion_type: str = "hierarchical"
+    # 운율 결합 방식(11.3.2 항목 3). 셋을 비교하면 "게이트 기구가 값을 하는가"와
+    # "운율 정보 자체가 값을 하는가"가 분리된다 — 하나만 돌리면 못 가른다.
+    #   "gate"  (기본) 설계 v3 §5.2의 sigmoid 게이트. v1~v12b가 쓴 것.  273,408개
+    #   "concat"       게이트 없이 선형 결합. gate와 파라미터가 2% 차이.  267,776개
+    #   "none"         운율을 아예 안 쓴다.                                    0개
+    # 근거는 src/fusion/gated_prosody.py의 ProsodyConcatFusion 참고 — v11 게이트를
+    # 실측해보니 소음이 와도 총량을 안 옮긴다(평소 변동의 4.7%).
+    prosody_fusion: str = "gate"
 
 
 @dataclass

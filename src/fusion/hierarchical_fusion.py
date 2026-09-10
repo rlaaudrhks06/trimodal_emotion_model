@@ -1,17 +1,38 @@
 """설계 v3 §5.1: 2단계 계층적 교차 어텐션 (총 4개 블록, 6개가 아님).
 
-1단계 (언어적 축 결합): 오디오 ↔ 텍스트를 먼저 양방향으로 결합.
-    CA1: Context_a  = CrossAttn(Q=X_a, KV=X_t)   # 오디오가 텍스트를 참조
-    CA2: Context_t  = CrossAttn(Q=X_t, KV=X_a)   # 텍스트가 오디오를 참조
+1단계: 두 모달리티를 먼저 양방향으로 결합.
+    CA1: Context_1 = CrossAttn(Q=X_1, KV=X_2)
+    CA2: Context_2 = CrossAttn(Q=X_2, KV=X_1)
 
-2단계 (표정 축 결합): 1단계 결과를 시간축으로 이어붙인 AT_seq와 시각을 결합.
-    AT_seq = concat([Context_a, Context_t], dim=시간축)
-    CA3: Context_v  = CrossAttn(Q=X_v,   KV=AT_seq)   # 시각이 (오디오+텍스트)를 참조
-    CA4: Context_AT = CrossAttn(Q=AT_seq, KV=X_v)     # (오디오+텍스트)가 시각을 참조
-         -> 다시 오디오 구간/텍스트 구간으로 분리해 각각 풀링
+2단계: 1단계 결과를 시간축으로 이어붙인 pair_seq와 나머지 한 모달리티를 결합.
+    pair_seq = concat([Context_1, Context_2], dim=시간축)
+    CA3: Context_3    = CrossAttn(Q=X_3,      KV=pair_seq)
+    CA4: Context_pair = CrossAttn(Q=pair_seq, KV=X_3)
+         -> 다시 1번 구간/2번 구간으로 분리해 각각 풀링
 
 이렇게 하면 최종 분류기(§5.3)에 필요한 z_cross_v / z_cross_a / z_cross_t
 세 벡터를 모두 얻으면서, 블록 수는 3쌍×양방향(6개)이 아닌 4개로 줄어든다.
+
+---
+
+## 어느 두 모달리티를 1단계에 넣을 것인가 — `order`
+
+v1~v12b는 전부 **오디오+텍스트가 1단계**였다("무슨 말을 어떤 억양으로" 다음 "표정이
+그걸 뒷받침하나"). 이 순서는 설계 v3에서 계산량을 아끼려고 고른 것이지 측정으로
+정한 것이 아니다.
+
+그런데 8.30.1절 애블레이션에서 **텍스트를 빼면 가장 크게 떨어졌다**(−6.59%p,
+오디오 −3.69 / 영상 −3.32). 텍스트가 정보를 가장 많이 가져서라고 보기 어려운 것이,
+8.30.2절에서 글자에 감정이 없는 짧은 발화("왜?", "네.")의 정확도가 오히려 전체보다
+2.3%p 높았기 때문이다. 모델은 텍스트의 *의미*에 기대고 있지 않다.
+
+남은 설명이 **구조**다. 텍스트가 1단계에 박혀 있어 앵커 역할을 하므로, 텍스트를
+지우면 1단계가 붕괴하고 그 손상이 2단계까지 전파된다 — 즉 애블레이션이 잰 것은
+"텍스트가 가진 정보량"이 아니라 "텍스트를 앵커로 박아둔 구조가 무너진 손해"일 수 있다.
+
+`order`를 바꿔 학습하면 이 둘이 갈린다. 텍스트를 1단계에서 빼고도(`audio_visual`)
+텍스트 애블레이션 손실이 그대로면 **정보**이고, 줄어들면 **구조**다. 통합기록
+11.3.2가 재학습 항목 1번으로 지목한 실험이며, 답에 따라 융합 설계 전체를 다시 본다.
 """
 import torch
 import torch.nn as nn
@@ -29,16 +50,59 @@ def mean_pool(x: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> 
     return summed / count
 
 
+# 값은 (1단계 첫째, 1단계 둘째, 2단계에 붙는 나머지)다.
+# "audio_text"가 v1~v12b 전체가 쓴 순서이므로 기본값이다.
+FUSION_ORDERS: dict[str, tuple[str, str, str]] = {
+    "audio_text": ("a", "t", "v"),    # v11 기본 — 오디오↔텍스트 먼저, 그 다음 영상
+    "audio_visual": ("a", "v", "t"),  # 텍스트를 1단계에서 뺀다 (11.3.2 항목 1의 본 실험)
+    "visual_text": ("v", "t", "a"),   # 오디오를 1단계에서 뺀다 (대조군)
+}
+
+# 역할 기반으로 이름을 바꾸기 전(v1~v12b)의 파라미터 키. 그때는 순서가 항상
+# audio_text였으므로 이름이 곧 역할이었다.
+_LEGACY_KEY_MAP = {
+    "ca_audio_attends_text": "ca_first_attends_second",
+    "ca_text_attends_audio": "ca_second_attends_first",
+    "ca_visual_attends_at": "ca_third_attends_pair",
+    "ca_at_attends_visual": "ca_pair_attends_third",
+}
+
+
 class HierarchicalCrossAttentionFusion(nn.Module):
+    """`order`에 따라 1단계에 들어가는 두 모달리티가 달라진다.
+
+    **모듈 이름이 모달리티가 아니라 역할이다.** `ca_first_attends_second`는
+    order가 "audio_text"면 오디오가 텍스트를 참조하는 블록이고, "audio_visual"이면
+    오디오가 영상을 참조하는 블록이다. 이름에 모달리티를 박아두면 order를 바꾸는
+    순간 이름이 거짓말을 하게 되는데, 이 프로젝트는 `face_frames_dir`이라는 이름이
+    세 절에 걸쳐 사람을 속인 적이 있다(8.8절). 그래서 역할로 부른다.
+
+    파라미터 형태는 order와 무관하게 같다(전부 d_model). 따라서 v11 체크포인트를
+    다른 order 모델에 넣는 것이 **에러 없이** 된다 — 하지만 그 가중치는 audio_text
+    순서로 학습된 것이라 의미가 다르다. 아래 로드 훅이 그 경우 경고한다.
+    """
+
     def __init__(
         self, d_model: int, n_heads: int, ffn_dim: int, n_layers: int = 1,
-        dropout: float = 0.1, drop_path: float = 0.0,
+        dropout: float = 0.1, drop_path: float = 0.0, order: str = "audio_text",
     ):
         super().__init__()
-        self.ca_audio_attends_text = StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
-        self.ca_text_attends_audio = StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
-        self.ca_visual_attends_at = StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
-        self.ca_at_attends_visual = StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
+        if order not in FUSION_ORDERS:
+            raise ValueError(
+                f"fusion_order는 {list(FUSION_ORDERS)} 중 하나여야 한다, got {order!r}"
+            )
+        self.order = order
+        self.roles = FUSION_ORDERS[order]
+
+        def block() -> StackedCrossAttention:
+            return StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
+
+        self.ca_first_attends_second = block()
+        self.ca_second_attends_first = block()
+        self.ca_third_attends_pair = block()
+        self.ca_pair_attends_third = block()
+
+        self.register_load_state_dict_pre_hook(_remap_legacy_keys)
 
     def forward(
         self,
@@ -49,29 +113,143 @@ class HierarchicalCrossAttentionFusion(nn.Module):
         a_mask: torch.Tensor | None = None,
         t_mask: torch.Tensor | None = None,
     ):
-        t_a = x_a.size(1)
+        # 호출부는 항상 (v, a, t)로 준다. 여기서 order에 맞춰 역할로 재배치한다 —
+        # 호출부가 순서를 알 필요가 없어야 order를 바꿔도 model.py가 그대로다.
+        seqs = {"v": x_v, "a": x_a, "t": x_t}
+        masks = {"v": v_mask, "a": a_mask, "t": t_mask}
+        k1, k2, k3 = self.roles
+        x1, x2, x3 = seqs[k1], seqs[k2], seqs[k3]
+        m1, m2, m3 = masks[k1], masks[k2], masks[k3]
 
-        # --- 1단계: 오디오 <-> 텍스트 ---
-        context_a = self.ca_audio_attends_text(x_a, x_t, kv_key_padding_mask=t_mask)  # [B, T_a, d]
-        context_t = self.ca_text_attends_audio(x_t, x_a, kv_key_padding_mask=a_mask)  # [B, T_t, d]
+        t_1 = x1.size(1)
 
-        at_seq = torch.cat([context_a, context_t], dim=1)  # [B, T_a+T_t, d]
-        if a_mask is not None or t_mask is not None:
-            a_mask_ = a_mask if a_mask is not None else torch.zeros_like(context_a[..., 0], dtype=torch.bool)
-            t_mask_ = t_mask if t_mask is not None else torch.zeros_like(context_t[..., 0], dtype=torch.bool)
-            at_mask = torch.cat([a_mask_, t_mask_], dim=1)
+        # --- 1단계: 1번 <-> 2번 ---
+        context_1 = self.ca_first_attends_second(x1, x2, kv_key_padding_mask=m2)  # [B, T_1, d]
+        context_2 = self.ca_second_attends_first(x2, x1, kv_key_padding_mask=m1)  # [B, T_2, d]
+
+        pair_seq = torch.cat([context_1, context_2], dim=1)  # [B, T_1+T_2, d]
+        if m1 is not None or m2 is not None:
+            m1_ = m1 if m1 is not None else torch.zeros_like(context_1[..., 0], dtype=torch.bool)
+            m2_ = m2 if m2 is not None else torch.zeros_like(context_2[..., 0], dtype=torch.bool)
+            pair_mask = torch.cat([m1_, m2_], dim=1)
         else:
-            at_mask = None
+            pair_mask = None
 
-        # --- 2단계: 시각 <-> (오디오+텍스트) ---
-        context_v = self.ca_visual_attends_at(x_v, at_seq, kv_key_padding_mask=at_mask)  # [B, T_v, d]
-        context_at = self.ca_at_attends_visual(at_seq, x_v, kv_key_padding_mask=v_mask)  # [B, T_a+T_t, d]
+        # --- 2단계: 3번 <-> (1번+2번) ---
+        context_3 = self.ca_third_attends_pair(x3, pair_seq, kv_key_padding_mask=pair_mask)   # [B, T_3, d]
+        context_pair = self.ca_pair_attends_third(pair_seq, x3, kv_key_padding_mask=m3)       # [B, T_1+T_2, d]
 
-        context_at_a = context_at[:, :t_a, :]
-        context_at_t = context_at[:, t_a:, :]
+        z = {
+            k1: mean_pool(context_pair[:, :t_1, :], m1),
+            k2: mean_pool(context_pair[:, t_1:, :], m2),
+            k3: mean_pool(context_3, m3),
+        }
+        # 반환은 다시 (v, a, t) 고정 — 분류기 입력 순서가 order에 따라 흔들리면 안 된다.
+        return z["v"], z["a"], z["t"]
 
-        z_cross_v = mean_pool(context_v, v_mask)
-        z_cross_a = mean_pool(context_at_a, a_mask)
-        z_cross_t = mean_pool(context_at_t, t_mask)
 
-        return z_cross_v, z_cross_a, z_cross_t
+class SelfAttentionFusion(nn.Module):
+    """교차 어텐션 대신 **모달리티별 self-attention**을 쓰는 베이스라인(11.3.2 항목 2).
+
+    묻는 것: 교차 어텐션이 하는 일이 정말 *교차*인가, 아니면 그냥 추가 용량인가.
+
+    **왜 MLP가 아니라 self-attention인가.** MulT 원논문(참고문헌 2번)의 애블레이션이
+    쓴 late fusion 베이스라인이 정확히 이것이다 — *"a late-fusion transformer that
+    feature-wise concatenates the last elements of three self-attention transformers"*
+    (Tsai et al., ACL 2019, §4.3). 그리고 §4.2에 *"For fair comparisons, we control
+    the number of parameters of all models to be approximately the same"*가 붙어 있다.
+
+    MLP로 바꾸면 바뀌는 변수가 둘이 된다 — 모달 간 섞임이 사라지는 것과, 블록이
+    어텐션이 아니게 되는 것. 그러면 성능이 떨어져도 어느 쪽 때문인지 못 가른다.
+    self-attention은 블록 구조·차원·연산이 전부 같고 **Q와 KV가 같은 모달리티에서
+    오느냐만** 다르다. "한 번에 하나씩만 바꾼다"가 지켜진다.
+
+    구현도 그래서 `StackedCrossAttention`을 그대로 쓴다(q_seq == kv_seq). 새 블록을
+    짜면 미묘하게 달라질 수 있는데, 같은 클래스를 쓰면 그럴 여지가 없다.
+
+    **파라미터는 정확히 같지 않다.** 계층 융합은 블록 4개(1단계 2 + 2단계 2)인데
+    이쪽은 모달리티당 1개씩 3개다. 실측(config_si_w2v vs config_fusion_self):
+
+        융합      3,159,040 -> 2,369,280   (-789,760)
+        학습 전체 8,760,071 -> 7,970,311   (-9.02%)
+
+    MulT도 "approximately the same"이라고 했다. 해석 주의: self가 **이기거나 비기면**
+    파라미터가 적은데도 그런 것이라 결론이 더 강해지고, **지면** 이 9%를 감안해야 한다.
+    """
+
+    def __init__(
+        self, d_model: int, n_heads: int, ffn_dim: int, n_layers: int = 1,
+        dropout: float = 0.1, drop_path: float = 0.0,
+    ):
+        super().__init__()
+
+        def block() -> StackedCrossAttention:
+            return StackedCrossAttention(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
+
+        self.sa_visual = block()
+        self.sa_audio = block()
+        self.sa_text = block()
+
+    def forward(
+        self,
+        x_v: torch.Tensor,
+        x_a: torch.Tensor,
+        x_t: torch.Tensor,
+        v_mask: torch.Tensor | None = None,
+        a_mask: torch.Tensor | None = None,
+        t_mask: torch.Tensor | None = None,
+    ):
+        # 반환 형태(v, a, t)와 각 [B, d_model]은 계층 융합과 동일하다 —
+        # 하이브리드 결합·운율 게이트·분류기를 손대지 않기 위해서다.
+        return (
+            mean_pool(self.sa_visual(x_v, x_v, kv_key_padding_mask=v_mask), v_mask),
+            mean_pool(self.sa_audio(x_a, x_a, kv_key_padding_mask=a_mask), a_mask),
+            mean_pool(self.sa_text(x_t, x_t, kv_key_padding_mask=t_mask), t_mask),
+        )
+
+
+def build_fusion(
+    fusion_type: str, d_model: int, n_heads: int, ffn_dim: int, n_layers: int = 1,
+    dropout: float = 0.1, drop_path: float = 0.0, order: str = "audio_text",
+) -> nn.Module:
+    """config의 `fusion_type`으로 융합 모듈을 고른다.
+
+    `fusion_order`는 계층 융합에만 의미가 있다. self에서 order를 바꿔 놓고 "실험했다"고
+    믿는 것이 이 프로젝트가 반복해서 당한 유형이라, 조용히 무시하지 않고 멈춘다.
+    """
+    if fusion_type == "hierarchical":
+        return HierarchicalCrossAttentionFusion(
+            d_model, n_heads, ffn_dim, n_layers, dropout, drop_path, order=order
+        )
+    if fusion_type == "self":
+        if order != "audio_text":
+            raise ValueError(
+                f"fusion_type='self'에는 fusion_order가 의미가 없는데 {order!r}가 지정됐다. "
+                f"self는 모달리티끼리 섞지 않으므로 1단계/2단계 구분 자체가 없다. "
+                f"order를 지우거나 fusion_type을 'hierarchical'로 둘 것."
+            )
+        return SelfAttentionFusion(d_model, n_heads, ffn_dim, n_layers, dropout, drop_path)
+    raise ValueError(f"fusion_type은 'hierarchical' 또는 'self'여야 한다, got {fusion_type!r}")
+
+
+def _remap_legacy_keys(module, state_dict, prefix, local_metadata, strict,
+                       missing_keys, unexpected_keys, error_msgs):
+    """모듈 이름을 역할 기반으로 바꾸기 전(v1~v12b) 체크포인트의 키를 흡수한다.
+
+    훅으로 하는 이유: `load_state_dict`를 부르는 곳이 train·evaluate·engine·
+    export·benchmark 다섯 군데인데, 각자 고치면 반드시 한 곳이 빠진다. 모듈에
+    한 번 걸어두면 부르는 쪽은 아무것도 몰라도 된다.
+    """
+    renamed = False
+    for old, new in _LEGACY_KEY_MAP.items():
+        old_prefix = f"{prefix}{old}."
+        for key in [k for k in state_dict if k.startswith(old_prefix)]:
+            state_dict[f"{prefix}{new}.{key[len(old_prefix):]}"] = state_dict.pop(key)
+            renamed = True
+
+    if renamed and module.order != "audio_text":
+        # 조용히 틀리는 자리다 — 형태가 같아서 로딩은 성공하지만 그 가중치는
+        # audio_text 순서로 학습된 것이라 다른 순서에서는 의미가 다르다.
+        print(f"[fusion] ⚠️  옛 체크포인트(audio_text 순서로 학습)를 "
+              f"order={module.order} 모델에 로드했다. 처음부터 재학습할 것이 아니라면 "
+              f"이 가중치는 의미가 맞지 않는다.")

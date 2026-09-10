@@ -1,0 +1,83 @@
+# v13a — 계층 순서 애블레이션. v11(config_si_w2v.yaml)에서 **fusion_order 하나만** 바꾼다.
+#
+# 묻는 것(통합기록 11.3.2 항목 1 / 이슈기록 16장 "다음에 답해야 할 질문은 하나다"):
+#   텍스트를 빼면 가장 크게 떨어지는데(−6.59%p, 8.30.1절) 그게 **정보** 때문인가
+#   **구조** 때문인가.
+#
+# 의심의 근거: 글자에 감정이 없는 짧은 발화("왜?", "네.")에서 정확도가 오히려 전체보다
+# 2.3%p 높았다(8.30.2절). 모델이 텍스트의 의미에 기대고 있지 않다는 뜻이다. 그렇다면
+# 남은 설명은 텍스트가 1단계에 박혀 앵커 노릇을 한다는 것 — 지우면 1단계가 붕괴하고
+# 손상이 2단계로 전파된다.
+#
+# 판정 방법: 이 config로 학습한 뒤 **텍스트 애블레이션을 다시 잰다.**
+#   python scripts/evaluate.py --config configs/config_fusion_av.yaml \
+#       --checkpoint checkpoints_fusion_av/best_model.pt \
+#       --save-as v13a_no_text --save-predictions --drop-modality text
+#
+#   손실이 −6.59%p 근처로 유지  -> 텍스트가 실제로 정보를 갖고 있다 (**정보**)
+#   손실이 뚜렷이 줄어듦         -> 앵커 구조가 만든 값이었다 (**구조**)
+#
+# 후자면 설계 v3에서 계산량을 아끼려고 고른 계층 순서가 병목이라는 뜻이고,
+# 융합 설계 전체를 다시 봐야 한다.
+#
+# 비교 규칙(8.29.5절): 차이의 표준오차 약 0.66%p, **1.3%p 미만은 결론을 내지 않는다.**
+# 평가할 때 --save-predictions로 발화별 예측을 반드시 저장한다 — v11과 v12b를
+# 지금도 짝지어 검정하지 못하는 이유가 그걸 저장하지 않아서다.
+#
+# 대조군이 필요하면 fusion_order를 visual_text로 바꾼 config를 하나 더 만든다
+# (오디오를 1단계에서 빼는 조건). 본 실험은 audio_visual 하나다.
+
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 7
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  cross_attn_drop_path: 0.1
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 12
+  visual_freeze_layers: 9
+  # ← v11과 다른 유일한 설정. 1단계가 오디오↔영상이 되고 텍스트가 2단계로 밀린다.
+  fusion_order: "audio_visual"
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  backbone: "wav2vec2"
+  pretrained_model: "models/wav2vec2-large-xlsr-53"
+  w2v_layer: 12
+  w2v_freeze: true
+  sample_rate: 16000
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  batch_size: 128
+  epochs: 40
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+
+  train_manifest: "data/manifests_si/train.csv"
+  val_manifest: "data/manifests_si/val.csv"
+  test_manifest: "data/manifests_si/test.csv"
+  prosody_stats_path: "data/prosody_stats_train_si.json"
+
+  checkpoint_dir: "checkpoints_fusion_av"
+  periodic_checkpoint_dir: "checkpoints_periodic_fusion_av"
+  checkpoint_interval: 20

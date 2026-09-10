@@ -1,0 +1,89 @@
+# v13c — 운율 게이트 애블레이션. v11(config_si_w2v.yaml)에서 **prosody_fusion 하나만** 바꾼다.
+#
+# 묻는 것(통합기록 11.3.2 항목 3): 설계 v3 §5.2의 운율 게이트가 깨끗한 조건에서도
+# 쓸모가 있는가.
+#
+# 의심의 근거(8.30.3절): 소음 조건에서 운율 기여가 **0으로 측정됐다.** 파형에만 잡음을
+# 넣어 운율을 깨끗하게 남겨줘도 회복이 없었다(−9.01 vs −9.30%p, z=0.45). 게이트의 설계
+# 취지가 바로 "음성이 잡음에 묻힐 때 안정적인 운율 쪽 비중을 높인다"였으므로,
+# **가장 필요한 순간에 작동하지 않았다**는 뜻이다.
+#
+# 재학습 전에 먼저 볼 것 — `scripts/inspect_prosody_gate.py`가 v11 체크포인트에서
+# 게이트 값 g를 직접 잰다. g가 1에 붙어 있으면 운율 항이 애초에 죽어 있는 것이고,
+# 그러면 이 애블레이션의 결과를 미리 알 수 있다. A100을 쓰기 전에 공짜로 얻는 정보다.
+#
+# 이 config는 운율을 **아예 안 쓴다**. 게이트 모듈 자체를 만들지 않으므로
+# "운율이 정말 안 쓰인다"가 가중치의 부재로 보증된다.
+#   학습 파라미터  8,760,071 -> 8,486,663  (-273,408, -3.12%)
+#
+# 판정: 이 조건이 v11과 1.3%p 안에서 구분되지 않으면(8.29.5절) 운율 10차원과
+# 게이트 273,408개는 값을 못 하고 있는 것이다. 그러면 두 갈래다.
+#   - 걷어낸다 — 젯슨 배포가 그만큼 가벼워지고, librosa.pyin(feature_cache의 존재
+#     이유였던 그 느린 연산)이 전처리에서 통째로 사라진다
+#   - 다시 설계한다 — 제안서 3.1.5 ②에 "게이트 재설계를 병행한다"로 약속돼 있다
+#
+# 주의: 운율을 빼도 모달리티 드롭아웃의 "오디오를 끈다" 정의는 그대로 둔다
+# (mel+prosody+waveform 셋 다 0). 값이 쓰이지 않을 뿐이라 무동작이고, 정의를 손대면
+# 두 번 재발한 그 버그의 세 번째가 된다(8.6절·8.18.4절).
+#
+# 평가:
+#   python scripts/evaluate.py --config configs/config_prosody_none.yaml \
+#       --checkpoint checkpoints_prosody_none/best_model.pt \
+#       --save-as v13c --save-predictions
+
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 7
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  cross_attn_drop_path: 0.1
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 12
+  visual_freeze_layers: 9
+  # ← v11과 다른 유일한 설정.
+  prosody_fusion: "none"
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  backbone: "wav2vec2"
+  pretrained_model: "models/wav2vec2-large-xlsr-53"
+  w2v_layer: 12
+  w2v_freeze: true
+  sample_rate: 16000
+  n_mels: 80
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  batch_size: 128
+  epochs: 40
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+
+  train_manifest: "data/manifests_si/train.csv"
+  val_manifest: "data/manifests_si/val.csv"
+  test_manifest: "data/manifests_si/test.csv"
+  # 운율을 안 써도 통계 경로는 남겨둔다 — 데이터셋이 운율을 계속 계산하므로
+  # (캐시 스키마 호환) 정규화가 빠지면 캐시가 다른 조건으로 채워진다.
+  prosody_stats_path: "data/prosody_stats_train_si.json"
+
+  checkpoint_dir: "checkpoints_prosody_none"
+  periodic_checkpoint_dir: "checkpoints_periodic_prosody_none"
+  checkpoint_interval: 20

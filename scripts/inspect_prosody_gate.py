@@ -148,21 +148,36 @@ def main() -> int:
     if g_noisy is not None:
         # 설계 v3 §5.2의 약속을 그대로 잰다: 음성이 잡음에 묻히면 운율 쪽 비중이
         # **높아져야** 한다 = g가 내려가야 한다. 같은 발화·같은 순서라 짝지어 비교다.
+        from scipy import stats
+
         n = min(len(g), len(g_noisy))
         d = g_noisy[:n] - g[:n]                      # 음수면 운율 쪽으로 옮겨간 것
         per_utt_d = d.mean(axis=1)
+        moved = int((per_utt_d < 0).sum())
         print(f"\n=== 소음 SNR {args.noise_snr}dB에서 게이트가 옮겨가는가 "
               f"({n}발화 짝지어) ===")
-        print(f"  Δg 평균 {d.mean():+.4f}  (음수 = 운율 쪽으로 이동, 설계가 약속한 방향)")
-        print(f"  발화별 Δg 평균: {per_utt_d.min():+.4f} ~ {per_utt_d.max():+.4f}")
-        moved = (per_utt_d < 0).mean() * 100
-        print(f"  운율 쪽으로 옮겨간 발화 비율: {moved:.1f}%  (우연이면 50%)")
-        # 전체 배합 총량이 실제로 얼마나 바뀌었나 — 이것이 "비중을 높인다"의 의미다.
-        print(f"  전체 평균 g: 깨끗 {g[:n].mean():.4f} -> 소음 {g_noisy[:n].mean():.4f}")
-        print("\n  해석: 평균 Δg가 0 근처이고 옮겨간 발화가 50% 근처면, 게이트는"
-              "\n  소음을 감지하지 못하거나 감지하고도 반응하지 않는 것이다. 그러면"
-              "\n  8.30.3절의 '운율 기여 0'은 운율이 쓸모없어서가 아니라 **게이트가"
-              "\n  필요한 순간에 움직이지 않아서**다 — 재설계 대상이 게이트가 된다.")
+
+        # 방향과 크기를 **따로** 판정한다. 방향이 유의해도 크기가 무의미할 수 있고,
+        # 이 게이트가 정확히 그 경우다. 하나로 뭉뚱그리면 "작동한다"는 잘못된 결론이 난다.
+        binom = stats.binomtest(moved, n, 0.5, alternative="greater")
+        print(f"  [방향] 운율 쪽으로 옮겨간 발화 {moved}/{n} = {moved / n * 100:.1f}% "
+              f"(우연이면 50%), 이항검정 p={binom.pvalue:.2e}")
+
+        t, p = stats.ttest_1samp(per_utt_d, 0.0)
+        sd = per_utt_d.std(ddof=1)
+        print(f"  [크기] Δg 평균 {per_utt_d.mean():+.5f} (표준편차 {sd:.5f}), "
+              f"짝지어 t={t:.2f} p={p:.2e}, Cohen's d={per_utt_d.mean() / sd:.3f}")
+
+        # 크기를 무엇과 비교할 것인가 — 게이트가 평소에 실제로 쓰는 범위다.
+        within = g.std(axis=0).mean()
+        print(f"  [맥락] 소음이 옮긴 양 {abs(d.mean()):.4f} vs 평소 발화별 변동 "
+              f"{within:.4f}  ->  {abs(d.mean()) / within * 100:.1f}%")
+        print(f"         전체 평균 g: 깨끗 {g[:n].mean():.4f} -> 소음 {g_noisy[:n].mean():.4f}")
+
+        print("\n  해석: 방향이 유의한데 크기가 평소 변동의 몇 %에 그치면, 게이트는"
+              "\n  소음을 **감지는 하지만 반응하지 않는** 것이다. 그러면 8.30.3절의"
+              "\n  '운율 기여 0'은 운율이 쓸모없어서가 아니라 게이트가 필요한 순간에"
+              "\n  충분히 움직이지 않아서다 — 재설계 대상이 운율이 아니라 게이트가 된다.")
 
     if args.save:
         out = ROOT / args.save

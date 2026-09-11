@@ -123,6 +123,12 @@ def code_provenance() -> dict:
 
     `git_dirty`가 특히 중요하다. 커밋 해시가 있어도 작업 트리가 더러웠으면 그
     해시로는 재현되지 않는다. **재현 불가를 조용히 넘기지 않으려고** 같이 남긴다.
+
+    dirty 판정은 **결과에 영향을 주는 경로만** 본다(src·scripts·configs).
+    [사건] 결과 JSON을 git이 추적하므로, 평가 3개를 같이 돌리면 먼저 끝난 것이
+    JSON을 쓰는 순간 나머지 둘이 `git status`를 보고 dirty=True를 남겼다. 소스는
+    커밋 그대로였다. 결과 파일이 자기 자신을 더럽히는 구조라, 이대로면 두 번째
+    평가부터는 항상 dirty가 떠서 이 플래그가 아무것도 가려내지 못한다.
     """
     def _git(*args: str) -> str | None:
         try:
@@ -133,7 +139,9 @@ def code_provenance() -> dict:
         return r.stdout.strip() if r.returncode == 0 else None
 
     commit = _git("rev-parse", "--short", "HEAD")
-    status = _git("status", "--porcelain")
+    # 결과·문서·편집기 설정이 바뀐 건 재현성과 무관하다. 코드·설정 경로만 본다
+    # (미추적 파일도 이 경로 안이면 잡힌다 — 새로 만든 스크립트로 돌렸을 수 있다).
+    status = _git("status", "--porcelain", "--", "src", "scripts", "configs")
     return {
         "git_commit": commit,                       # None이면 git 밖에서 돌린 것
         "git_branch": _git("rev-parse", "--abbrev-ref", "HEAD"),

@@ -1,0 +1,68 @@
+{
+  // ── 왜 이 파일이 있는가 ────────────────────────────────────────────────
+  //
+  // [사건] Pylance(파이썬 언어 서버)가 CPU 코어 하나를 계속 태우고 메모리를 4GB까지
+  //        먹다 죽고, 다시 떠서 같은 일을 반복했다. MacBook이 80~85도까지 올라갔다.
+  //
+  //        원인은 이 저장소 안에 학습 데이터가 그대로 들어 있다는 것이다.
+  //
+  //          data/processed_full/faces   2,165,735개 파일 (얼굴 크롭 JPEG)
+  //          data/feature_cache          발화당 .npz
+  //          .venv                          55,693개 파일 (torch·transformers 등)
+  //          models·checkpoints          가중치 수 GB
+  //
+  //        .gitignore로는 막았지만 **VS Code와 Pylance는 .gitignore를 보지 않는다.**
+  //        파일 감시자는 216만 개를 전부 감시하려 하고, Pylance는 .venv의 16,705개
+  //        .py를 전부 타입 분석한다. 그러다 메모리를 넘겨 죽고, 재시작하면 인덱싱을
+  //        처음부터 다시 한다 — 그 반복이 열의 정체였다.
+  //
+  // 서버 작업(A100)과는 무관하다. 무거운 계산은 전부 서버에 있고, 이건 순전히
+  // 편집기가 데이터 디렉터리를 훑느라 난 열이다.
+  //
+  // 고친 뒤에는 창을 다시 로드해야 적용된다 (Cmd+Shift+P -> Developer: Reload Window).
+
+  // 파일 감시자 — 216만 개를 감시하지 않게 한다. 여기가 가장 큰 몫이다.
+  "files.watcherExclude": {
+    "**/.venv/**": true,
+    "**/data/**": true,
+    "**/models/**": true,
+    "**/checkpoints/**": true,
+    "**/checkpoints_periodic*/**": true,
+    "**/archived_runs/**": true,
+    "**/results/embeddings/**": true,
+    "**/.git/objects/**": true,
+    "**/__pycache__/**": true
+  },
+
+  // Pylance 분석 대상 — src·scripts·tests만 본다. 서드파티 import는 인터프리터
+  // 경로로 풀리므로 .venv를 제외해도 자동완성·타입은 그대로 동작한다.
+  "python.analysis.exclude": [
+    "**/.venv/**",
+    "**/data/**",
+    "**/models/**",
+    "**/checkpoints/**",
+    "**/checkpoints_periodic*/**",
+    "**/archived_runs/**",
+    "**/results/**",
+    "**/__pycache__/**"
+  ],
+
+  // 검색(ripgrep)도 같이 막는다. 안 막으면 Cmd+Shift+F 한 번에 216만 개를 훑는다.
+  "search.exclude": {
+    "**/.venv": true,
+    "**/data": true,
+    "**/models": true,
+    "**/checkpoints": true,
+    "**/checkpoints_periodic*": true,
+    "**/archived_runs": true,
+    "**/results/embeddings": true,
+    "**/__pycache__": true
+  },
+
+  // 열린 파일만 진단한다(기본값). 워크스페이스 전체 진단으로 바꾸면 위 제외를
+  // 해도 무거워지므로 명시해 둔다.
+  "python.analysis.diagnosticMode": "openFilesOnly",
+
+  // 인터프리터를 고정한다 — 이게 없으면 Pylance가 환경을 못 찾아 헤맬 때가 있다.
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python"
+}

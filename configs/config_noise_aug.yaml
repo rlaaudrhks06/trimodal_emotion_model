@@ -1,4 +1,6 @@
-# 트리모달 + 소음 증강 학습 — config_si_w2v.yaml(v11)에서 **소음 증강만** 켠 것.
+# v11a — 소음 증강 학습. config_si_w2v.yaml(v11)에서 **소음 증강만** 켠 것.
+# 모델 구조·파라미터·분할·선택 기준은 v11과 같고 학습 데이터가 보는 조건만 다르다.
+# v13a~d(융합 설계 애블레이션)와 목적이 달라 v11의 변형으로 이름 붙였다.
 # 오디오 백본만 멜 -> wav2vec2로 바꾼 것.
 #
 # 근거(8.18절 / 11.0.1절): 같은 화자 독립 분할·같은 seed·같은 하이퍼파라미터에서
@@ -83,8 +85,8 @@ train:
   test_manifest: "data/manifests_si/test.csv"
   prosody_stats_path: "data/prosody_stats_train_si.json"
 
-  checkpoint_dir: "checkpoints_noise_aug"
-  periodic_checkpoint_dir: "checkpoints_periodic_noise_aug"
+  checkpoint_dir: "checkpoints_v11a"
+  periodic_checkpoint_dir: "checkpoints_periodic_v11a"
   # 20으로 둔 이유: 파라미터가 4.37억으로 늘어 체크포인트 1개가 1.63GB다(v10은 0.45GB).
   # 5에폭 간격이면 40에폭에 스냅샷만 13GB이고, 그중 10.6GB는 매번 똑같이 저장되는
   # 동결 wav2vec2 가중치다. 스냅샷의 원래 용도였던 SWA는 두 차례 시도 끝에 효과 없음으로
@@ -106,3 +108,8 @@ train:
   # scripts/precompute_noisy_prosody.py --snr 20 10 5 --workers 16 로 미리 만든다.
   # 없으면 데이터셋이 __init__에서 죽는다(조용히 깨끗한 운율로 흘러가지 않게).
   noisy_prosody_dir: "data/noisy_prosody"
+
+  # wav2vec2 출력 캐시(13.6절). 동결 백본이 스텝 시간의 84%라 미리 뽑아둔 것을 읽는다.
+  # 18분/에폭 -> 약 3분. 값은 파형 경로와 로짓 5e-4 안에서 같다(tests/test_w2v_cache.py).
+  # scripts/precompute_w2v_cache.py 로 만든다. 없으면 데이터셋이 __init__에서 죽는다.
+  w2v_cache_dir: "data/w2v_cache"

@@ -147,6 +147,10 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "
             if "waveform" in batch:
                 model_inputs["waveform"] = batch["waveform"]
                 model_inputs["wav_attention_mask"] = batch["wav_attention_mask"]
+            # wav2vec2 캐시 경로(13.6절): 데이터셋이 audio_feat를 실어주면 파형 대신 그걸 쓴다.
+            if "audio_feat" in batch:
+                model_inputs["audio_feat"] = batch["audio_feat"]
+                model_inputs["audio_feat_padding_mask"] = batch["audio_feat_padding_mask"]
             if use_aux:
                 logits, aux_logits = model(**model_inputs, return_aux=True)
             else:
@@ -228,12 +232,16 @@ def main():
     # val_accuracy 기준이라 val에 소음을 넣으면 선택 기준 자체가 v11과 달라져 비교가 깨진다.
     # 그래서 ds_kwargs를 공유하지 않고 train 쪽에만 더한다.
     noise_aug_snrs = train_cfg.get("noise_aug_snrs")
+    # wav2vec2 출력 캐시(13.6절). train은 증강 조건까지, val은 깨끗 조건만 읽는다
+    # (val에 noise_aug_snrs를 안 넘기므로 자동으로 clean만 확인한다).
+    w2v_cache_dir = train_cfg.get("w2v_cache_dir")
     train_ds = ManifestEmotionDataset(
         train_cfg["train_manifest"], cfg, **ds_kwargs,
         noise_aug_snrs=noise_aug_snrs,
         noisy_prosody_dir=train_cfg.get("noisy_prosody_dir"),
+        w2v_cache_dir=w2v_cache_dir,
     )
-    val_ds = ManifestEmotionDataset(train_cfg["val_manifest"], cfg, **ds_kwargs)
+    val_ds = ManifestEmotionDataset(train_cfg["val_manifest"], cfg, **ds_kwargs, w2v_cache_dir=w2v_cache_dir)
     if need_wav:
         print(f"[train] wav2vec2 오디오 백본 — {cfg.audio_pretrained} "
               f"layer={cfg.audio_w2v_layer} freeze={cfg.audio_w2v_freeze}", flush=True)
@@ -255,6 +263,14 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=train_cfg["batch_size"], shuffle=False, collate_fn=collate_fn, **loader_kwargs)
 
     model = TrimodalEmotionModel(cfg, modality_dropout_prob=train_cfg["modality_dropout_prob"]).to(device)
+    if w2v_cache_dir:
+        # 캐시 경로에서 모달리티 드롭아웃이 v11과 같은 입력("0 파형의 wav2vec2 출력")을 주도록
+        # 프레임 길이별 표를 올린다. 없으면 드롭아웃 첫 발생에서 죽는다 — 조용히 0을 넣지 않는다.
+        zt = Path(w2v_cache_dir) / "zero_table.pt"
+        if not zt.exists():
+            raise FileNotFoundError(f"{zt} 없음 — scripts/precompute_w2v_cache.py가 만든다")
+        model.audio_backbone.set_zero_table(torch.load(zt, map_location=device))
+        print(f"[train] w2v 캐시 경로 — 0-특징 표 {tuple(model.audio_backbone._zero_table.shape)} 적재", flush=True)
 
     # 과적합 대응(8.11/8.12절): BERT 상위 층을 나머지 모듈과 동일한 lr로 파인튜닝한 게
     # v1~v6 반복된 과적합의 주요 원인 중 하나였음을 확인. v7은 BERT를 아예 동결해 검증했고,
@@ -335,6 +351,9 @@ def main():
         "seed": args.seed,
         "config": args.config,
         "batch_size": train_cfg["batch_size"],
+        # 캐시 경로로 학습한 run은 파형 경로와 wav2vec2 값이 1e-3 수준으로 다르다(13.6절).
+        # 어느 경로였는지 남겨야 나중에 두 run을 비교할 때 조건이 같은지 알 수 있다.
+        "w2v_cache_dir": w2v_cache_dir,
         **code_provenance(),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[train] 실행 정보 기록: {ckpt_dir / 'run_info.json'} (seed={args.seed})")

@@ -100,6 +100,78 @@ class Wav2Vec2AudioBackbone(nn.Module):
         out = self.w2v(waveform, attention_mask=attention_mask, output_hidden_states=True)
         return out.hidden_states[self.layer]  # [B, T_a, hidden]
 
+    # ── 캐시 경로 (13.6절) ──────────────────────────────────────────────────
+    #
+    # 학습 한 스텝의 84%가 위 _extract다(실측 2.05s/2.43s). 동결이라 같은 파형이면
+    # 40에폭 내내 같은 값을 내는데 매번 다시 계산했다. 멜·운율·얼굴을 캐시한 것과 같은
+    # 논리로 이 출력을 미리 뽑아두면 18분/에폭 -> 약 3분이 된다.
+    #
+    # 경계를 여기(hidden_states[layer])로 잡는 이유: 이 아래 proj·frontend가 학습
+    # 파라미터의 전부다. 캐시는 동결 부분만 담고, 학습되는 부분은 매 스텝 돈다.
+    #
+    # [실측] 캐시(발화 하나씩 추출)와 배치 경로는 값이 완전히 같지 않다 — 최대 2.3,
+    # 평균 1e-3. 원인은 cudnn TF32(끄면 100배 줄어 최대 0.015). 배치 길이가 바뀌면
+    # 값이 바뀌므로 v11 학습도 매 에폭 셔플마다 이 잡음을 겪어왔다. v11 체크포인트로
+    # 판정하면 test 1,024발화 중 1건 예측이 바뀐다(99.90%). 그래서 수용한다.
+
+    def extract_features(self, waveform: torch.Tensor, wav_attention_mask: torch.Tensor | None) -> torch.Tensor:
+        """캐시 채우기용 공개 진입점. forward가 쓰는 _extract와 **같은 함수**를 부른다 —
+        따로 구현하면 정규화·층 선택이 한쪽만 바뀌는 날이 온다."""
+        with torch.no_grad():
+            return self._extract(waveform, wav_attention_mask)
+
+    # ── 모달리티 드롭아웃용 0-특징 표 ────────────────────────────────────────
+    #
+    # 드롭아웃은 파형을 0으로 만들고 마스크는 그대로 둔다(model.py). 그러면 wav2vec2는
+    # "길이 T의 0 입력"을 받는데, 그 출력은 **T에 따라 다르다**(위치 conv가 경계
+    # 64프레임을 다르게 봄 — 실측 가장자리 차이 26.8). 캐시 경로에서 v11과 같은 동작을
+    # 재현하려면 프레임 길이별 출력을 표로 들고 있다가 드롭 시 대입해야 한다. 특징을
+    # 그냥 0으로 하면 v11과 다른 입력이 된다.
+    #
+    # 체크포인트에 넣지 않는다(persistent=False) — 399×399×1024 fp16 = 325MB가 매
+    # 체크포인트에 실리면 안 된다. 학습 시작 때 캐시 디렉터리에서 올린다.
+
+    def build_zero_table(self, max_frames: int, device: torch.device,
+                         frame_counts=None) -> torch.Tensor:
+        """[max_frames+1, max_frames, hidden] fp16. 행 T = 프레임 T개짜리 0 파형의 출력.
+
+        frame_counts를 주면 그 길이들만 채운다 — 테스트가 CPU에서 399번 forward를
+        안 돌게 하기 위한 것이고, 실제 캐시는 전부 채운다.
+        """
+        table = torch.zeros(max_frames + 1, max_frames, self.w2v.config.hidden_size,
+                            dtype=torch.float16, device=device)
+        for T in (range(1, max_frames + 1) if frame_counts is None else sorted(set(frame_counts))):
+            # 프레임 T개를 내는 최소 샘플 수. 전체 conv가 kernel 400 / stride 320이다.
+            n = 320 * (T - 1) + 400
+            assert int(self.output_lengths(torch.tensor([n]))[0]) == T, (T, n)
+            z = torch.zeros(1, n, device=device)
+            m = torch.ones(1, n, dtype=torch.long, device=device)
+            table[T, :T] = self.extract_features(z, m)[0].half()
+        return table
+
+    def set_zero_table(self, table: torch.Tensor | None) -> None:
+        self._zero_table = table
+
+    def zero_feature(self, n_frames: int) -> torch.Tensor:
+        """프레임 n개짜리 0 파형이 냈을 wav2vec2 출력 [n, hidden]."""
+        t = getattr(self, "_zero_table", None)
+        if t is None:
+            raise RuntimeError(
+                "0-특징 표가 없다 — 캐시 경로에서 모달리티 드롭아웃을 쓰려면 "
+                "set_zero_table()로 올려야 한다 (scripts/precompute_w2v_cache.py가 만든다)"
+            )
+        if n_frames > t.size(1):
+            raise ValueError(f"프레임 {n_frames}개는 표 범위({t.size(1)})를 넘는다")
+        return t[n_frames, :n_frames]
+
+    def forward_cached(self, h: torch.Tensor, key_padding_mask: torch.Tensor | None) -> torch.Tensor:
+        """캐시된 wav2vec2 출력 [B, T_a, hidden] -> X_a [B, T_a, d_model].
+
+        forward의 뒷부분(proj -> frontend)과 **한 글자도 다르지 않아야** 한다. 그래서
+        forward도 이 함수를 부르게 했다 — 사본이 둘이면 한쪽만 고쳐진다.
+        """
+        return self.frontend(self.proj(h), key_padding_mask=key_padding_mask)
+
     def frame_padding_mask(self, wav_attention_mask: torch.Tensor, n_frames: int) -> torch.Tensor:
         """파형 마스크 [B, T_samples] -> 프레임 마스크 [B, T_a] (True=패딩).
 
@@ -127,7 +199,7 @@ class Wav2Vec2AudioBackbone(nn.Module):
         # 마스크를 안 받았으면 여기서 직접 만들어 넘긴다 — 호출부가 잊어버려도 안전하게.
         if key_padding_mask is None and wav_attention_mask is not None:
             key_padding_mask = self.frame_padding_mask(wav_attention_mask, h.size(1))
-        return self.frontend(self.proj(h), key_padding_mask=key_padding_mask)
+        return self.forward_cached(h, key_padding_mask)
 
     def output_lengths(self, input_lengths: torch.Tensor) -> torch.Tensor:
         """파형 샘플 수 -> wav2vec2 출력 프레임 수."""

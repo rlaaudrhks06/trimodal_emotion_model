@@ -150,6 +150,7 @@ class ManifestEmotionDataset(Dataset):
         noise_snr_db: float | None = None,
         noise_aug_snrs: list[float] | None = None,
         noisy_prosody_dir: str | Path | None = None,
+        w2v_cache_dir: str | Path | None = None,
     ):
         import pandas as pd
 
@@ -214,6 +215,36 @@ class ManifestEmotionDataset(Dataset):
                     "scripts/precompute_noisy_prosody.py 먼저"
                 )
             self._load_noisy_prosody(Path(noisy_prosody_dir))
+
+        # ── wav2vec2 출력 캐시(13.6절). 학습 한 스텝의 84%가 동결 wav2vec2인데 같은
+        # 파형이면 매 에폭 같은 값을 낸다. scripts/precompute_w2v_cache.py가 조건별
+        # ({clean|snr20|...}/{utt}.npy, fp16 [T_a, 1024])로 미리 뽑아두면 여기서 읽어
+        # 배치에 audio_feat로 실어 보내고, 모델은 proj·frontend만 돈다.
+        #
+        # 켜면 파형은 안 읽는다 — 모델이 안 쓰는 256KB를 발화마다 디스크에서 읽을 이유가 없다.
+        # 캐시가 하나라도 비면 __init__에서 죽는다. 에폭 중간에 죽거나, 더 나쁘게는 조용히
+        # 파형 경로로 흘러가 배치 안에 두 경로가 섞이면 안 된다.
+        self.w2v_cache_dir = Path(w2v_cache_dir) if w2v_cache_dir else None
+        if self.w2v_cache_dir is not None:
+            if cfg.audio_backbone != "wav2vec2":
+                raise ValueError(f"w2v_cache_dir은 wav2vec2 백본에서만 의미가 있다(현재 '{cfg.audio_backbone}')")
+            if noise_snr_db is not None:
+                raise ValueError("평가용 고정 SNR(noise_snr_db)과 w2v_cache_dir은 같이 쓸 수 없다 — "
+                                 "평가는 파형 경로로 한다")
+            conds = ["clean"] + [f"snr{s:g}" for s in (self.noise_aug_snrs or [])]
+            utts = self.df["utt_id"].astype(str)
+            for c in conds:
+                d = self.w2v_cache_dir / c
+                missing = [u for u in utts if not (d / f"{u}.npy").exists()]
+                if missing:
+                    raise FileNotFoundError(
+                        f"wav2vec2 캐시 {d}에 {len(missing):,}/{len(utts):,}건이 없다 "
+                        f"(예: {missing[:3]}) — scripts/precompute_w2v_cache.py 먼저"
+                    )
+            if self.return_waveform:
+                print("[dataset] w2v 캐시 사용 — 파형은 읽지 않는다 (audio_feat로 대체)", flush=True)
+                self.return_waveform = False
+            print(f"[dataset] w2v 캐시 {self.w2v_cache_dir} 조건 {conds} · {len(utts):,}발화 전수 확인", flush=True)
 
         # 데이터 전처리 EDA 점검 문서(§1.2)의 최우선 항목: prosody 10차원은 스케일이
         # 서로 완전히 다른데(f0_mean 수백 vs jitter 0.01대) 지금까지 정규화가 전혀
@@ -366,6 +397,13 @@ class ManifestEmotionDataset(Dataset):
             # np.load가 매번 새 배열을 주므로 애초에 이 위험이 없다 — 성질을 맞춰둔다.
             prosody = self._noisy_arr[snr_db][i].copy()
 
+        # wav2vec2 캐시(13.6절): 이번 에폭 조건(snr_db)에 맞는 파일을 읽는다. 위 운율과
+        # **같은 snr_db**를 쓰므로 운율·오디오 표현이 같은 잡음 실현을 공유한다.
+        audio_feat = None
+        if self.w2v_cache_dir is not None:
+            cond = "clean" if snr_db is None else f"snr{snr_db:g}"
+            audio_feat = np.load(self.w2v_cache_dir / cond / f"{utt_id}.npy")  # fp16 [T_a, 1024]
+
         # 프레임은 uint8(0~255)로 저장/전달되므로 여기서 0~1 float32로 변환한다.
         # 마이그레이션 도중에는 옛 캐시(float32, 이미 0~1)가 섞여 있을 수 있어 dtype으로 분기 —
         # 둘 다 최종적으로 동일한 값이 된다.
@@ -390,6 +428,8 @@ class ManifestEmotionDataset(Dataset):
             "text": str(row.text),
             "label": label_idx,
         }
+        if audio_feat is not None:
+            item["audio_feat"] = audio_feat
         for col, key in self.aux_columns.items():
             # 빈 값(원본 미발견)이나 우리 체계 밖의 값은 IGNORE_INDEX로 둔다.
             # pandas는 빈 칸을 NaN(float)으로 읽으므로 문자열 변환 후 판정해야 한다.
@@ -466,6 +506,13 @@ class CollateFn:
                 wav_mask[i, : len(w)] = 1
             out_extra["waveform"] = torch.from_numpy(wav_arr)
             out_extra["wav_attention_mask"] = torch.from_numpy(wav_mask)
+
+        if "audio_feat" in batch[0]:
+            # 캐시된 wav2vec2 출력 [T_a, 1024] fp16 -> [B, T_max, 1024] float32 + 마스크(True=패딩).
+            # _pad_time이 float32로 올려준다 — proj(Linear)가 float32라 여기서 맞춘다.
+            feat_tensor, feat_mask = _pad_time([b["audio_feat"] for b in batch])
+            out_extra["audio_feat"] = feat_tensor
+            out_extra["audio_feat_padding_mask"] = feat_mask
 
         # v12 보조 라벨. 데이터셋이 실어줬을 때만 배치에 들어간다("waveform"과 같은 규약).
         # 값이 IGNORE_INDEX인 표본은 CrossEntropyLoss가 알아서 건너뛴다.

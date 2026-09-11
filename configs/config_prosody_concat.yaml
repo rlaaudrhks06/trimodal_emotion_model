@@ -95,3 +95,8 @@ train:
   checkpoint_dir: "checkpoints_prosody_concat"
   periodic_checkpoint_dir: "checkpoints_periodic_prosody_concat"
   checkpoint_interval: 20
+
+  # wav2vec2 출력 캐시(13.6절). 동결 백본이 스텝 시간의 84%라 미리 뽑아둔 것을 읽는다.
+  # 18분/에폭 -> 약 3분. 값은 파형 경로와 로짓 5e-4 안에서 같다(tests/test_w2v_cache.py).
+  # scripts/precompute_w2v_cache.py 로 만든다. 없으면 데이터셋이 __init__에서 죽는다.
+  w2v_cache_dir: "data/w2v_cache"

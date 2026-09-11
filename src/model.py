@@ -103,7 +103,8 @@ class TrimodalEmotionModel(nn.Module):
             self.aux_audio_head = head(m.d_model)
             self.aux_text_head = head(m.d_model)
 
-    def _maybe_drop_modalities(self, mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform=None):
+    def _maybe_drop_modalities(self, mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform=None,
+                               audio_feat=None, audio_feat_padding_mask=None):
         """설계 v3 §9 강건성: 학습 시 모달리티 드롭아웃.
 
         배치의 각 샘플에 대해 확률적으로 한 모달리티를 통째로 마스킹한다
@@ -118,7 +119,7 @@ class TrimodalEmotionModel(nn.Module):
         드롭아웃이 아예 무효가 된다).
         """
         if not self.training or self.modality_dropout_prob <= 0.0:
-            return mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform
+            return mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform, audio_feat
 
         b = mel_spec.size(0)
         mel_spec, frames = mel_spec.clone(), frames.clone()
@@ -126,6 +127,8 @@ class TrimodalEmotionModel(nn.Module):
         attention_mask = attention_mask.clone()
         if waveform is not None:
             waveform = waveform.clone()
+        if audio_feat is not None:
+            audio_feat = audio_feat.clone()
         for i in range(b):
             if random.random() < self.modality_dropout_prob:
                 choice = random.choice(["audio", "visual", "text"])
@@ -134,12 +137,19 @@ class TrimodalEmotionModel(nn.Module):
                     prosody_vec[i].zero_()
                     if waveform is not None:
                         waveform[i].zero_()
+                    if audio_feat is not None:
+                        # 캐시 경로(13.6절): 파형을 0으로 만든 것과 **같은 입력**을 줘야 한다.
+                        # 0 파형의 wav2vec2 출력은 0이 아니고 길이에 따라 다르므로, 이 발화의
+                        # 유효 프레임 수에 맞는 0-특징을 표에서 꺼내 대입한다. 특징을 그냥
+                        # 0으로 하면 v11이 학습 때 본 것과 다른 입력이 된다.
+                        n = int((~audio_feat_padding_mask[i]).sum())
+                        audio_feat[i, :n] = self.audio_backbone.zero_feature(n).to(audio_feat.dtype)
                 elif choice == "visual":
                     frames[i].zero_()
                 else:
                     attention_mask[i].zero_()
                     attention_mask[i, 0] = 1  # BERT류는 최소 1개 유효 토큰 필요
-        return mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform
+        return mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform, audio_feat
 
     def forward(
         self,
@@ -153,28 +163,39 @@ class TrimodalEmotionModel(nn.Module):
         waveform: torch.Tensor | None = None,             # wav2vec2 백본일 때만 사용
         wav_attention_mask: torch.Tensor | None = None,   # [B, T_samples] 1=유효
         return_aux: bool = False,                         # v12 보조 헤드 출력도 받을지
+        audio_feat: torch.Tensor | None = None,           # 캐시된 wav2vec2 출력 [B, T_a, hidden] (13.6절)
+        audio_feat_padding_mask: torch.Tensor | None = None,  # [B, T_a] True=패딩
     ):
         """return_aux=False(기본)면 로짓 텐서 하나만 돌려준다 — v1~v11 호출부가 그대로 동작.
 
         True면 (logits, {"aux_visual": ..., "aux_audio": ..., "aux_text": ...})를 준다.
         보조 헤드가 없는 설정(aux_head_dim=0)에서 True를 주면 빈 dict가 함께 온다.
         """
-        mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform = self._maybe_drop_modalities(
-            mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform
+        mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform, audio_feat = self._maybe_drop_modalities(
+            mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform,
+            audio_feat, audio_feat_padding_mask,
         )
 
         if self.use_w2v:
-            if waveform is None:
-                raise ValueError(
-                    "wav2vec2 백본은 원본 파형이 필요하다 — "
-                    "ManifestEmotionDataset(return_waveform=True)로 만들었는지 확인할 것"
+            if audio_feat is not None:
+                # 캐시 경로(13.6절): 동결 wav2vec2를 건너뛰고 proj·frontend만 돈다.
+                # 파형 경로와 뒷부분이 같은 함수(forward_cached)라 학습되는 부분은 동일하다.
+                if audio_feat_padding_mask is None:
+                    raise ValueError("audio_feat에는 audio_feat_padding_mask가 같이 와야 한다")
+                x_a = self.audio_backbone.forward_cached(audio_feat, audio_feat_padding_mask)
+                audio_padding_mask = audio_feat_padding_mask
+            else:
+                if waveform is None:
+                    raise ValueError(
+                        "wav2vec2 백본은 원본 파형이 필요하다 — "
+                        "ManifestEmotionDataset(return_waveform=True)로 만들었는지 확인할 것"
+                    )
+                x_a = self.audio_backbone(waveform, wav_attention_mask=wav_attention_mask)
+                # wav2vec2는 자체 stride로 길이를 줄이므로 멜 기준 마스크를 쓸 수 없다.
+                audio_padding_mask = (
+                    self.audio_backbone.frame_padding_mask(wav_attention_mask, x_a.size(1))
+                    if wav_attention_mask is not None else None
                 )
-            x_a = self.audio_backbone(waveform, wav_attention_mask=wav_attention_mask)
-            # wav2vec2는 자체 stride로 길이를 줄이므로 멜 기준 마스크를 쓸 수 없다.
-            audio_padding_mask = (
-                self.audio_backbone.frame_padding_mask(wav_attention_mask, x_a.size(1))
-                if wav_attention_mask is not None else None
-            )
         else:
             x_a = self.audio_backbone(mel_spec, key_padding_mask=audio_padding_mask)  # [B, T_a, d_model]
         x_v = self.visual_backbone(frames, key_padding_mask=visual_padding_mask)       # [B, T_v, d_model]

@@ -171,6 +171,10 @@ class TrimodalEmotionModel(nn.Module):
         True면 (logits, {"aux_visual": ..., "aux_audio": ..., "aux_text": ...})를 준다.
         보조 헤드가 없는 설정(aux_head_dim=0)에서 True를 주면 빈 dict가 함께 온다.
         """
+        if audio_feat is not None and audio_feat_padding_mask is None:
+            # 드롭아웃이 마스크로 유효 길이를 세므로 그 전에 확인한다 — 뒤에서 확인하면
+            # 학습 모드에서 드롭아웃 안의 `~None`으로 먼저 죽어 원인이 안 보인다.
+            raise ValueError("audio_feat에는 audio_feat_padding_mask가 같이 와야 한다")
         mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform, audio_feat = self._maybe_drop_modalities(
             mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform,
             audio_feat, audio_feat_padding_mask,
@@ -180,8 +184,6 @@ class TrimodalEmotionModel(nn.Module):
             if audio_feat is not None:
                 # 캐시 경로(13.6절): 동결 wav2vec2를 건너뛰고 proj·frontend만 돈다.
                 # 파형 경로와 뒷부분이 같은 함수(forward_cached)라 학습되는 부분은 동일하다.
-                if audio_feat_padding_mask is None:
-                    raise ValueError("audio_feat에는 audio_feat_padding_mask가 같이 와야 한다")
                 x_a = self.audio_backbone.forward_cached(audio_feat, audio_feat_padding_mask)
                 audio_padding_mask = audio_feat_padding_mask
             else:

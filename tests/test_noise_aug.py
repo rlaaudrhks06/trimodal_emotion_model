@@ -115,6 +115,10 @@ def test_prosody_matches_returned_waveform(ds):
             if checked[snr] >= 2:      # 조건마다 2건이면 충분하다(1건 × 12에폭은 느리다)
                 continue
             item = ds[i]
+            # dtype이 어긋나면 깨끗·소음이 섞인 배치가 np.stack에서 float64로 올라가고
+            # CollateFn은 prosody를 캐스팅하지 않아 그대로 모델까지 간다.
+            assert item["prosody"].dtype == np.float32, \
+                f"{utt} SNR={snr}: 운율 dtype {item['prosody'].dtype} (float32여야 함)"
             got = extract_prosody(item["waveform"], sr).astype(np.float32)
             d = float(np.abs(item["prosody"] - got).max())
             assert d < 1e-5, (
@@ -194,6 +198,108 @@ def test_guards(cfg, mini_manifest, npz_dir):
     print(f"  ✅ 발화 누락 npz 차단 — {m}")
 
 
+def test_cache_written_and_stays_clean(cfg, mini_manifest, npz_dir, cache_dir: Path):
+    """캐시가 **쓰이는가**, 그리고 거기 들어간 운율이 **깨끗한가**.
+
+    [사건] 소음 증강 덮어쓰기 블록을 캐시 저장 코드 앞에 끼워넣으면서 들여쓰기로
+    저장 블록을 자기 안에 삼켰다. 결과가 두 겹으로 나빴다.
+
+      · 증강을 안 쓰는 평범한 학습에서 feature_cache가 한 건도 안 쓰인다
+        (서버에서 한 시간 들여 만든 39GB가 앞으로 안 늘어난다)
+      · 증강을 쓰면 오염된 운율이 깨끗한 캐시에 박힌다 — 바로 위 주석이 막겠다고
+        적어둔 그 일이 주석 밑에서 일어난다
+
+    다른 테스트가 전부 cache_dir=None으로 돌아서 못 잡았다. 캐시를 실제로 쓰는
+    검증이 없으면 같은 사고가 또 난다.
+    """
+    from src.features.prosody import extract_prosody
+
+    sr = cfg.audio_sample_rate
+    ds = ManifestEmotionDataset(
+        str(mini_manifest), cfg, return_waveform=True, cache_dir=cache_dir,
+        noise_aug_snrs=SNRS, noisy_prosody_dir=npz_dir,
+    )
+    # 소음이 뽑힌 발화를 골라 읽는다 — 그 발화의 캐시가 오염되는지가 핵심이다.
+    ds.set_epoch(1)
+    noisy = [i for i in range(len(ds)) if ds._snr_for(str(ds.df.iloc[i]["utt_id"])) is not None]
+    assert noisy, "1에폭에 소음이 뽑힌 발화가 없다"
+    for i in noisy:
+        ds[i]
+
+    written = sorted(p.name for p in cache_dir.glob("*.npz"))
+    assert len(written) == len(noisy), f"캐시가 안 쓰였다: {written}"
+
+    for i in noisy:
+        row = ds.df.iloc[i]
+        utt = str(row["utt_id"])
+        y, _ = librosa.load(row["wav_path"], sr=sr, mono=True, duration=8.0)
+        want = extract_prosody(y, sr).astype(np.float32)
+        cached = np.load(cache_dir / f"{utt}.npz")["prosody"]
+        d = float(np.abs(cached - want).max())
+        assert d < 1e-5, f"{utt}: 캐시에 오염된 운율이 저장됐다 (깨끗한 값과 {d:.3e} 차이)"
+
+    # 캐시 히트 경로에서도 소음 덮어쓰기가 걸려야 한다 — 캐시에는 깨끗한 값이 있으니
+    # 덮어쓰기가 빠지면 "증강했다"는 실험이 조용히 깨끗한 실험이 된다.
+    for i in noisy:
+        item = ds[i]
+        got = extract_prosody(item["waveform"], sr).astype(np.float32)
+        assert np.abs(item["prosody"] - got).max() < 1e-5, "캐시 히트 시 덮어쓰기가 빠졌다"
+    # 증강을 **안** 쓰는 평범한 학습에서도 캐시가 쓰여야 한다. 위 버그의 더 심한 절반이
+    # 이쪽이었다 — 소음과 무관한 모든 학습이 캐시 없이 돌게 된다.
+    plain_dir = cache_dir.parent / "cache_plain"
+    plain = ManifestEmotionDataset(str(mini_manifest), cfg, return_waveform=True,
+                                   cache_dir=plain_dir)
+    assert plain.noise_aug_snrs is None
+    plain[0]
+    n_plain = len(list(plain_dir.glob("*.npz")))
+    assert n_plain == 1, f"소음 없는 경로에서 캐시가 안 쓰였다 ({n_plain}건)"
+
+    print(f"  ✅ 캐시 {len(written)}건 기록 · 내용은 깨끗 · 캐시 히트에도 소음 적용 "
+          f"· 소음 없는 경로도 기록")
+
+
+def test_dataloader_workers(cfg, mini_manifest, npz_dir):
+    """워커 프로세스를 거쳐도 되는가. `--with-workers`일 때만 돈다(느리다).
+
+    이게 왜 따로 필요한가: 위 테스트는 전부 메인 프로세스에서 ds[i]를 직접 부른다.
+    실제 학습은 DataLoader(num_workers=8)를 거치는데 거기서 두 가지가 새로 걸린다.
+
+      · 데이터셋이 pickle 돼야 한다(공유 numpy 배열·dict를 들고 있다)
+      · set_epoch(epoch)가 **워커까지 가야 한다.** 안 가면 15에폭이 1에폭째 조건으로
+        돌면서 에러가 하나도 안 난다 — train.py가 증강 시 persistent_workers를 끄는 이유다.
+    """
+    import torch
+    from torch.utils.data import DataLoader
+
+    from src.datasets.manifest_dataset import make_collate_fn
+
+    ds = ManifestEmotionDataset(
+        str(mini_manifest), cfg, return_waveform=True,
+        prosody_stats_path=ROOT / "data" / "prosody_stats_train_si.json",
+        noise_aug_snrs=SNRS, noisy_prosody_dir=npz_dir,
+    )
+    collate = make_collate_fn(cfg.text_pretrained)
+
+    def run(epoch):
+        ds.set_epoch(epoch)
+        # persistent_workers=False — train.py가 증강 시 쓰는 것과 같은 조건.
+        dl = DataLoader(ds, batch_size=2, shuffle=False, num_workers=2,
+                        collate_fn=collate, persistent_workers=False)
+        out = []
+        for b in dl:
+            assert b["prosody_vec"].dtype == torch.float32, b["prosody_vec"].dtype
+            assert b["waveform"].dtype == torch.float32
+            assert torch.isfinite(b["prosody_vec"]).all(), "운율에 NaN/Inf"
+            out += [tuple(np.round(x.numpy(), 4)) for x in b["prosody_vec"]]
+        return out
+
+    a, b = run(3), run(3)
+    assert a == b, "같은 에폭인데 워커를 거치면 결과가 흔들린다"
+    assert len(a) == len(ds)
+    assert run(4) != a, "에폭을 바꿨는데 워커가 옛 조건으로 돈다 — set_epoch가 안 갔다"
+    print(f"  ✅ 워커 2개 통과 · prosody_vec float32 · set_epoch 전달됨 ({len(a)}건)")
+
+
 def build_npz(cfg, df, out_dir: Path):
     """scripts/precompute_noisy_prosody.py와 **같은 함수**로 만든다.
 
@@ -241,6 +347,11 @@ def main() -> int:
         test_prosody_matches_returned_waveform(ds)
         test_clean_draw_is_actually_clean(ds)
         test_guards(cfg, mini, td)
+        test_cache_written_and_stays_clean(cfg, mini, td, td / "cache")
+        if "--with-workers" in sys.argv:
+            test_dataloader_workers(cfg, mini, td)
+        else:
+            print("  ⏭  워커 검증 생략 (--with-workers로 켠다)")
 
     print("=== 전부 통과 ===")
     return 0

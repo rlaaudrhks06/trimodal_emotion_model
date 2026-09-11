@@ -258,8 +258,17 @@ class ManifestEmotionDataset(Dataset):
                     f"(예: {sorted(missing)[:3]}). 사전계산을 다른 매니페스트로 돌렸을 "
                     f"가능성이 크다 — 다시 돌릴 것"
                 )
+            arr = z["prosody"]
+            if arr.dtype != np.float32:
+                # 깨끗한 운율(extract_prosody)이 float32다. 여기가 float64면 두 경로가
+                # 섞인 배치에서 np.stack이 float64로 올라가고, CollateFn은 prosody를
+                # 캐스팅하지 않아 그대로 모델까지 간다.
+                raise ValueError(
+                    f"{p.name}의 운율 dtype이 {arr.dtype}다 — float32여야 한다"
+                    f"(extract_prosody와 같아야 배치 dtype이 안 올라간다)"
+                )
             self._noisy_idx[snr] = {u: i for i, u in enumerate(ids)}
-            self._noisy_arr[snr] = z["prosody"]
+            self._noisy_arr[snr] = arr
         print(f"[dataset] 소음 증강 SNR {self.noise_aug_snrs} + 깨끗 "
               f"— 발화별로 매 에폭 하나를 뽑는다 ({len(want):,}발화)", flush=True)
 
@@ -326,27 +335,36 @@ class ManifestEmotionDataset(Dataset):
             # 깨끗한 캐시에 저장**되고, 그 뒤 모든 실행이 그걸 깨끗한 값으로 읽는다.
             # 증강 경로의 오염은 아래 운율 덮어쓰기 + 파형 잡음으로만 들어간다.
             mel, prosody, frames = self._compute_features(row, self.noise_snr_db)
-            if self.noise_aug_snrs and cache_path is not None:
-                assert self.noise_snr_db is None  # 위 __init__이 동시 사용을 막는다
-
-        # 소음 증강: 운율만 사전계산본으로 갈아끼운다(13.5절). 원본(raw)이라 아래
-        # 정규화가 깨끗한 운율과 완전히 같은 방식으로 적용된다.
-        if snr_db is not None and self.noise_aug_snrs:
-            i = self._noisy_idx[snr_db].get(utt_id)
-            if i is None:
-                # __init__에서 전수 검사를 하므로 여기 오면 안 된다. 그래도 조용히
-                # 깨끗한 운율로 흘려보내지 않는다 — 그러면 안 한 실험이 한 실험이 된다.
-                raise KeyError(f"소음 운율 캐시(SNR {snr_db:g})에 {utt_id}가 없다")
-            prosody = self._noisy_arr[snr_db][i]
             if cache_path is not None:
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
                 # 중간에 프로세스가 죽어도 캐시 파일이 반쯤 쓰인 채로 남지 않도록
                 # 임시 파일에 먼저 쓰고 마지막에 원자적으로 이름을 바꾼다.
                 # np.savez는 파일명이 .npz로 안 끝나면 자기가 .npz를 덧붙여버리므로,
                 # 임시 파일명도 반드시 .npz로 끝나야 한다(안 그러면 rename 대상이 없어서 에러남).
+                #
+                # **여기서 저장하는 prosody는 반드시 깨끗한 값이어야 한다.** 그래서 소음
+                # 증강 덮어쓰기는 이 저장보다 **뒤에** 있다. 순서가 바뀌면(또는 아래
+                # 블록이 이 저장을 품으면) 오염된 운율이 깨끗한 캐시에 박히고, 그 뒤
+                # 모든 실행이 그걸 깨끗한 값으로 읽는다.
                 tmp_path = cache_path.with_name(cache_path.stem + ".tmp.npz")
                 np.savez(str(tmp_path), mel=mel, prosody=prosody, frames=frames)
                 tmp_path.replace(cache_path)
+
+        # 소음 증강: 운율만 사전계산본으로 갈아끼운다(13.5절). **캐시 저장 뒤**다 —
+        # 위 주석 참고. 원본(raw)이라 아래 정규화가 깨끗한 운율과 같은 방식으로 걸린다.
+        # dtype도 맞는다 — extract_prosody가 float32고 npz도 float32로 저장한다.
+        # (안 맞으면 깨끗·소음이 섞인 배치가 np.stack에서 float64로 올라가고,
+        #  CollateFn은 prosody를 캐스팅하지 않으므로 모델까지 그대로 간다.)
+        if snr_db is not None and self.noise_aug_snrs:
+            i = self._noisy_idx[snr_db].get(utt_id)
+            if i is None:
+                # __init__에서 전수 검사를 하므로 여기 오면 안 된다. 그래도 조용히
+                # 깨끗한 운율로 흘려보내지 않는다 — 그러면 안 한 실험이 한 실험이 된다.
+                raise KeyError(f"소음 운율 캐시(SNR {snr_db:g})에 {utt_id}가 없다")
+            # copy()가 필요한 이유: 이 배열은 전체 발화를 담은 공유 배열의 **뷰**다.
+            # 호출부가 제자리에서 고치면 그 발화의 캐시가 영구히 오염된다. 깨끗한 경로는
+            # np.load가 매번 새 배열을 주므로 애초에 이 위험이 없다 — 성질을 맞춰둔다.
+            prosody = self._noisy_arr[snr_db][i].copy()
 
         # 프레임은 uint8(0~255)로 저장/전달되므로 여기서 0~1 float32로 변환한다.
         # 마이그레이션 도중에는 옛 캐시(float32, 이미 0~1)가 섞여 있을 수 있어 dtype으로 분기 —

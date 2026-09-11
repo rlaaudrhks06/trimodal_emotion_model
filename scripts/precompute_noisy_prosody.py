@@ -4,6 +4,7 @@
 
 제안서 3.1.5 ②에 소음 증강 학습을 약속했다(SNR 20dB 43.92% / 10dB 37.18%, 일반 가정의
 음성 환경이 정확히 그 구간이다). 그런데 **지금 구조로는 그냥 켤 수 없다.**
+(그 두 수치는 이 절 이전 시드로 잰 값이라 재측정 대상이다 — 아래 시드 설명 참고.)
 
 `manifest_dataset.py`는 `noise_snr_db`를 받으면 `cache_dir`을 None으로 만든다. 옳은
 처리다 — 캐시에 든 멜·운율은 깨끗한 오디오로 계산한 것이라 섞이면 조건이 뒤죽박죽이
@@ -39,7 +40,7 @@ SNR당 **파일 하나**에 전체 발화를 담는다. 발화별 .npz로 쪼개
   data/noisy_prosody/snr{N}.npz   utt_ids (N,) · prosody (N,10) float32
 
 **원본(raw) 운율을 저장한다.** 기존 캐시와 같은 규약이다 — 정규화는 읽을 때 적용하므로
-통계를 바꿔도 캐시를 무효화할 필요가 없다(`manifest_dataset.py` 223~227행).
+통계를 바꿔도 캐시를 무효화할 필요가 없다(`manifest_dataset.py`의 prosody_mean 정규화 블록).
 
 ## train만 만드는 이유
 
@@ -64,22 +65,13 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.config import load_config                                    # noqa: E402
-from src.datasets.manifest_dataset import _utt_seed, add_white_noise  # noqa: E402
-from src.features.prosody import extract_prosody                      # noqa: E402
+from src.config import load_config                                       # noqa: E402
+from src.datasets.manifest_dataset import add_white_noise, noise_seed    # noqa: E402
+from src.features.prosody import extract_prosody                         # noqa: E402
 
-# 학습 때도 이 함수를 그대로 써야 파형과 운율이 같은 잡음을 겪는다.
-# 여기서만 정의하고 데이터셋이 import 하게 한다 — 사본을 만들면 한쪽만 고쳐진다.
-NOISE_SEED_BASE = 20260911
-
-
-def noise_seed(utt_id: str, snr_db: float) -> int:
-    """(발화, SNR) -> 결정적 시드.
-
-    SNR을 섞는 이유: 같은 발화라도 SNR마다 다른 잡음 실현을 주되, 같은 조합에는
-    항상 같은 잡음이 오게 한다. 그래야 미리 만든 운율과 학습 중 만드는 파형이 맞는다.
-    """
-    return _utt_seed(f"{utt_id}@{snr_db}", base=NOISE_SEED_BASE)
+# noise_seed는 **manifest_dataset에만** 있다. 학습·평가가 파형을 오염시킬 때 쓰는
+# 그 함수를 그대로 가져와야 여기서 만든 운율과 같은 잡음이 된다. 여기 사본을 두면
+# 한쪽만 고쳐지고, 그러면 운율과 파형이 다른 잡음을 겪는데 에러는 안 난다.
 
 
 def one(args: tuple[str, str, float, int, float]) -> tuple[str, np.ndarray]:
@@ -151,8 +143,10 @@ def main() -> int:
         print(f"[SNR {snr:g}] 완료 {len(ids):,}건 {(time.time()-t0)/60:.1f}분 "
               f"-> {out.name} ({out.stat().st_size/1e6:.1f}MB)", flush=True)
 
-    print("\n[precompute] 끝. 학습 쪽 배선은 아직 안 됐다 — "
-          "manifest_dataset이 이 파일을 읽게 해야 한다.")
+    print("\n[precompute] 끝. 학습은 configs/config_noise_aug.yaml로 돌린다 — "
+          "noise_aug_snrs/noisy_prosody_dir이 거기 있다.")
+    print("[precompute] 검증: python tests/test_noise_aug.py "
+          "(운율과 파형이 같은 잡음을 겪는지 본다)")
     return 0
 
 

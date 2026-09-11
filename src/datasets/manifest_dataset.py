@@ -57,6 +57,30 @@ def _utt_seed(utt_id: str, base: int = 20260808) -> int:
     h = hashlib.sha256(f"{base}:{utt_id}".encode("utf-8")).digest()
     return int.from_bytes(h[:4], "big")
 
+
+# 소음 시드는 **여기 하나만** 둔다(13.5절). scripts/precompute_noisy_prosody.py가
+# 이걸 import해서 미리 운율을 만들고, 학습·평가 때 같은 함수로 파형을 오염시킨다.
+# 사본을 만들면 한쪽만 고쳐져서 운율과 파형이 다른 잡음을 겪는데, 그건 에러 없이
+# 조용히 틀린 조건이 된다 — 이 프로젝트가 반복해서 당한 유형이다.
+NOISE_SEED_BASE = 20260911
+# SNR 추첨용 시드는 잡음 실현용과 분리한다. 같은 base를 쓰면 "어느 SNR을 뽑나"와
+# "그 SNR에서 어떤 잡음이 오나"가 같은 해시에서 나와 상관이 생긴다.
+NOISE_PICK_BASE = 20260912
+
+
+def noise_seed(utt_id: str, snr_db: float) -> int:
+    """(발화, SNR) -> 잡음 실현 시드.
+
+    SNR을 섞는 이유: 같은 발화라도 SNR마다 **독립적인** 잡음 실현을 준다. 섞지 않으면
+    numpy가 같은 표준정규 표본을 뽑고 scale만 곱하므로, SNR 20/10/5가 잡음 모양은
+    같고 진폭만 다른 1차원 족(族)이 된다(실측: 비율이 상수 0.31622777).
+
+    `:g`로 포맷하는 이유: config가 정수 10을 주고 argparse가 10.0을 주는데, 그냥
+    f-string에 넣으면 "10"과 "10.0"이 서로 다른 시드가 된다. 그러면 사전계산과 학습이
+    어긋나고, 그 어긋남은 조용하다.
+    """
+    return _utt_seed(f"{utt_id}@{snr_db:g}", base=NOISE_SEED_BASE)
+
 # v12 보조 라벨(11.2절): AI Hub 원본은 발화마다 감정 라벨을 네 개 갖고 있고,
 # 우리가 정답으로 쓰는 multimodal 라벨과 나머지 셋의 일치율이 크게 다르다
 # (소리 77.35% / 영상 41.69% / 텍스트 30.87%). 각 브랜치가 "자기 입력에 답이 있는"
@@ -124,6 +148,8 @@ class ManifestEmotionDataset(Dataset):
         max_video_frames: int = 32, cache_dir: str | Path | None = None,
         prosody_stats_path: str | Path | None = None, return_waveform: bool = False,
         noise_snr_db: float | None = None,
+        noise_aug_snrs: list[float] | None = None,
+        noisy_prosody_dir: str | Path | None = None,
     ):
         import pandas as pd
 
@@ -156,6 +182,39 @@ class ManifestEmotionDataset(Dataset):
                   f" (캐시된 멜·운율은 깨끗한 오디오 기준이라 섞이면 안 됨)")
             self.cache_dir = None
 
+        # ── 소음 증강 학습(13.5절). 위 평가 경로와 달리 **캐시를 살린다.**
+        #
+        # 소음 때문에 실제로 다시 계산해야 하는 건 운율 10차원뿐이다. 얼굴은 소음과
+        # 무관하고, 파형은 원래 캐시하지 않으니 잡음 주입이 공짜다. 그래서 운율만
+        # scripts/precompute_noisy_prosody.py가 미리 만들어둔 걸 읽어 덮어쓴다.
+        # 이게 없으면 매 에폭 librosa.pyin(0.80초/건)과 얼굴 JPEG 216만 장이 다시 돌아
+        # 에폭이 24분 -> 60~90분이 된다.
+        self.noise_aug_snrs = list(noise_aug_snrs) if noise_aug_snrs else None
+        self.epoch = 0
+        self._noisy_idx: dict[float, dict[str, int]] = {}
+        self._noisy_arr: dict[float, np.ndarray] = {}
+        if self.noise_aug_snrs:
+            if noise_snr_db is not None:
+                raise ValueError(
+                    "noise_snr_db(평가용 고정 SNR)와 noise_aug_snrs(학습용 증강)를 "
+                    "같이 줄 수 없다 — 어느 쪽이 이기는지 조용해진다"
+                )
+            # 멜은 깨끗한 캐시에서 나온다. wav2vec2 경로는 멜을 아예 안 써서(model.py의
+            # use_w2v 분기) 무해하지만, 멜 백본에 켜면 '깨끗한 멜 + 오염된 운율'이라는
+            # 뒤섞인 조건이 에러 없이 만들어진다. 그래서 막는다.
+            if cfg.audio_backbone != "wav2vec2":
+                raise ValueError(
+                    f"소음 증강은 wav2vec2 오디오 백본에서만 쓸 수 있다"
+                    f"(현재 '{cfg.audio_backbone}'). 멜 백본은 캐시의 깨끗한 멜을 받게 되어"
+                    f" 운율만 오염된 뒤섞인 조건이 된다"
+                )
+            if noisy_prosody_dir is None:
+                raise ValueError(
+                    "noise_aug_snrs를 쓰려면 noisy_prosody_dir이 필요하다 — "
+                    "scripts/precompute_noisy_prosody.py 먼저"
+                )
+            self._load_noisy_prosody(Path(noisy_prosody_dir))
+
         # 데이터 전처리 EDA 점검 문서(§1.2)의 최우선 항목: prosody 10차원은 스케일이
         # 서로 완전히 다른데(f0_mean 수백 vs jitter 0.01대) 지금까지 정규화가 전혀
         # 없었다. prosody_stats_path가 주어지면(= scripts/compute_prosody_stats.py로
@@ -175,15 +234,67 @@ class ManifestEmotionDataset(Dataset):
     def __len__(self) -> int:
         return len(self.df)
 
-    def _compute_features(self, row) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _load_noisy_prosody(self, d: Path) -> None:
+        """SNR별 사전계산 운율을 올린다. **발화가 하나라도 비면 여기서 죽는다.**
+
+        중간에 KeyError로 죽으면 16워커 × 수십 분 뒤에야 알게 된다. 더 나쁜 건
+        조용히 깨끗한 운율로 흘러가는 것이다 — 그러면 "소음 증강을 했다"는 실험이
+        사실은 안 한 실험이 되고 에러는 안 난다.
+        """
+        want = set(self.df["utt_id"].astype(str))
+        for snr in self.noise_aug_snrs:
+            p = d / f"snr{snr:g}.npz"
+            if not p.exists():
+                raise FileNotFoundError(
+                    f"소음 운율 캐시 없음: {p}  "
+                    f"(scripts/precompute_noisy_prosody.py --snr {snr:g})"
+                )
+            z = np.load(p)
+            ids = [str(u) for u in z["utt_ids"]]
+            missing = want - set(ids)
+            if missing:
+                raise ValueError(
+                    f"{p.name}에 매니페스트 발화 {len(missing)}건이 없다 "
+                    f"(예: {sorted(missing)[:3]}). 사전계산을 다른 매니페스트로 돌렸을 "
+                    f"가능성이 크다 — 다시 돌릴 것"
+                )
+            self._noisy_idx[snr] = {u: i for i, u in enumerate(ids)}
+            self._noisy_arr[snr] = z["prosody"]
+        print(f"[dataset] 소음 증강 SNR {self.noise_aug_snrs} + 깨끗 "
+              f"— 발화별로 매 에폭 하나를 뽑는다 ({len(want):,}발화)", flush=True)
+
+    def set_epoch(self, epoch: int) -> None:
+        """에폭마다 SNR 추첨을 바꾼다. 학습 루프가 매 에폭 불러야 한다.
+
+        [주의] DataLoader(persistent_workers=True)면 워커가 __init__ 때 받은 **사본**을
+        들고 있어서 여기서 바꾼 값이 워커에 안 간다. 그래서 소음 증강을 켤 때는
+        train.py가 persistent_workers를 끈다. 조용히 1에폭째 조건으로 15에폭을 도는
+        사고를 막기 위한 것이다.
+        """
+        self.epoch = epoch
+
+    def _snr_for(self, utt_id: str) -> float | None:
+        """이 발화가 이번 에폭에 받을 SNR. None이면 깨끗하게 둔다.
+
+        고정 할당(발화 ID만으로 결정)이 아니라 에폭을 섞는 이유: 고정하면 각 발화가
+        평생 한 조건만 겪고 깨끗한 표본이 1/(N+1)로 줄어든다. 에폭을 섞으면 같은 발화가
+        깨끗할 때도 있고 오염될 때도 있어 그게 증강이다.
+        """
+        if not self.noise_aug_snrs:
+            return self.noise_snr_db          # 평가용 고정 SNR, 또는 None
+        choices = [None, *self.noise_aug_snrs]
+        i = _utt_seed(f"{utt_id}#{self.epoch}", base=NOISE_PICK_BASE) % len(choices)
+        return choices[i]
+
+    def _compute_features(self, row, snr_db: float | None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         y, sr = librosa.load(
             row.wav_path, sr=self.cfg.audio_sample_rate, mono=True,
             duration=self.max_audio_seconds,
         )
         # 소음은 특징 계산 **전에** 넣는다 — 멜·운율·파형이 모두 같은 오염된
         # 오디오에서 나와야 실환경(마이크가 시끄러운 소리를 받는 상황)과 일치한다.
-        if self.noise_snr_db is not None:
-            y = add_white_noise(y, self.noise_snr_db, seed=_utt_seed(str(row.utt_id)))
+        if snr_db is not None:
+            y = add_white_noise(y, snr_db, seed=noise_seed(str(row.utt_id), snr_db))
         mel = waveform_to_mel(
             y, sr, n_mels=self.cfg.audio_n_mels,
             n_fft=self.cfg.audio_n_fft, hop_length=self.cfg.audio_hop_length,
@@ -198,12 +309,35 @@ class ManifestEmotionDataset(Dataset):
         row = self.df.iloc[idx]
         utt_id = str(row.utt_id)
 
+        # **SNR은 여기서 한 번만 뽑는다.** 운율과 파형이 같은 값을 써야 같은 잡음을
+        # 겪는다. 아래 두 곳에서 각자 뽑으면 어긋나고, 그 어긋남은 에러를 안 낸다.
+        snr_db = self._snr_for(utt_id)
+
         cache_path = self.cache_dir / f"{utt_id}.npz" if self.cache_dir else None
         if cache_path is not None and cache_path.exists():
             cached = np.load(cache_path)
             mel, prosody, frames = cached["mel"], cached["prosody"], cached["frames"]
         else:
-            mel, prosody, frames = self._compute_features(row)
+            # snr_db가 아니라 self.noise_snr_db를 넘긴다 — 헷갈리기 쉬운 곳이라 이유를 적는다.
+            #
+            # 평가 경로(noise_snr_db)는 위 __init__에서 cache_dir을 None으로 만들었으므로
+            # 오염된 특징이 캐시에 남을 일이 없다. 반면 증강 경로(noise_aug_snrs)는 캐시를
+            # 살려두는 게 목적이다. 여기에 snr_db를 넘기면 캐시 미스 때 **오염된 멜·운율이
+            # 깨끗한 캐시에 저장**되고, 그 뒤 모든 실행이 그걸 깨끗한 값으로 읽는다.
+            # 증강 경로의 오염은 아래 운율 덮어쓰기 + 파형 잡음으로만 들어간다.
+            mel, prosody, frames = self._compute_features(row, self.noise_snr_db)
+            if self.noise_aug_snrs and cache_path is not None:
+                assert self.noise_snr_db is None  # 위 __init__이 동시 사용을 막는다
+
+        # 소음 증강: 운율만 사전계산본으로 갈아끼운다(13.5절). 원본(raw)이라 아래
+        # 정규화가 깨끗한 운율과 완전히 같은 방식으로 적용된다.
+        if snr_db is not None and self.noise_aug_snrs:
+            i = self._noisy_idx[snr_db].get(utt_id)
+            if i is None:
+                # __init__에서 전수 검사를 하므로 여기 오면 안 된다. 그래도 조용히
+                # 깨끗한 운율로 흘려보내지 않는다 — 그러면 안 한 실험이 한 실험이 된다.
+                raise KeyError(f"소음 운율 캐시(SNR {snr_db:g})에 {utt_id}가 없다")
+            prosody = self._noisy_arr[snr_db][i]
             if cache_path is not None:
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
                 # 중간에 프로세스가 죽어도 캐시 파일이 반쯤 쓰인 채로 남지 않도록
@@ -256,10 +390,12 @@ class ManifestEmotionDataset(Dataset):
                     f"{self.cfg.audio_sample_rate}Hz를 기대함"
                 )
             wav = wav[: int(self.max_audio_seconds * sr)]
-            # 멜·운율과 **같은 시드**로 잡음을 넣는다. 여기서 빠뜨리면 wav2vec2
-            # 백본만 깨끗한 파형을 받아 조건이 어긋난다(v11은 파형만 읽는다).
-            if self.noise_snr_db is not None:
-                wav = add_white_noise(wav, self.noise_snr_db, seed=_utt_seed(str(row.utt_id)))
+            # 운율과 **같은 시드**로 잡음을 넣는다. 여기서 빠뜨리면 wav2vec2 백본만
+            # 깨끗한 파형을 받아 조건이 어긋난다(v11은 파형만 읽는다).
+            # snr_db는 __getitem__ 맨 위에서 한 번 뽑은 값이다 — 평가 경로면 고정 SNR,
+            # 증강 경로면 이번 에폭 추첨 결과이고, 위 운율 덮어쓰기와 반드시 같은 값이다.
+            if snr_db is not None:
+                wav = add_white_noise(wav, snr_db, seed=noise_seed(utt_id, snr_db))
             item["waveform"] = wav
         return item
 

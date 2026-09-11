@@ -224,7 +224,15 @@ def main():
     # wav2vec2 오디오 백본은 멜이 아니라 원본 파형을 받는다(8.18절).
     need_wav = cfg.audio_backbone == "wav2vec2"
     ds_kwargs = dict(cache_dir=cache_dir, prosody_stats_path=prosody_stats_path, return_waveform=need_wav)
-    train_ds = ManifestEmotionDataset(train_cfg["train_manifest"], cfg, **ds_kwargs)
+    # 소음 증강(13.5절). **train에만 넣고 val은 깨끗하게 둔다** — 체크포인트 선택이
+    # val_accuracy 기준이라 val에 소음을 넣으면 선택 기준 자체가 v11과 달라져 비교가 깨진다.
+    # 그래서 ds_kwargs를 공유하지 않고 train 쪽에만 더한다.
+    noise_aug_snrs = train_cfg.get("noise_aug_snrs")
+    train_ds = ManifestEmotionDataset(
+        train_cfg["train_manifest"], cfg, **ds_kwargs,
+        noise_aug_snrs=noise_aug_snrs,
+        noisy_prosody_dir=train_cfg.get("noisy_prosody_dir"),
+    )
     val_ds = ManifestEmotionDataset(train_cfg["val_manifest"], cfg, **ds_kwargs)
     if need_wav:
         print(f"[train] wav2vec2 오디오 백본 — {cfg.audio_pretrained} "
@@ -233,10 +241,15 @@ def main():
     # num_workers>0이면 오디오/영상 전처리(느린 CPU 작업)를 여러 프로세스가 병렬로 미리
     # 준비해두므로 GPU가 놀지 않는다 — 노트북에서는 0(안전), 전용 서버에서는 CPU 코어 수만큼 올릴 것.
     num_workers = train_cfg.get("num_workers", 0)
+    # 소음 증강을 켤 때 persistent_workers를 끄는 이유: 워커는 __init__ 때 받은 데이터셋
+    # **사본**을 들고 있어서, 살아남는 워커에는 set_epoch(epoch)가 전달되지 않는다.
+    # 그러면 15에폭 내내 1에폭째 SNR 추첨으로 돌면서 에러는 하나도 안 난다 —
+    # "증강을 했다"는 실험이 사실은 고정 조건 실험이 된다.
+    # 대가는 에폭마다 워커 재생성(약 10~20초, 24분 에폭 대비 1.4%)이다.
     loader_kwargs = dict(
         num_workers=num_workers,
         pin_memory=(device.type == "cuda"),
-        persistent_workers=num_workers > 0,
+        persistent_workers=num_workers > 0 and not noise_aug_snrs,
     )
     train_loader = DataLoader(train_ds, batch_size=train_cfg["batch_size"], shuffle=True, collate_fn=collate_fn, **loader_kwargs)
     val_loader = DataLoader(val_ds, batch_size=train_cfg["batch_size"], shuffle=False, collate_fn=collate_fn, **loader_kwargs)
@@ -335,6 +348,9 @@ def main():
     best_val_acc = 0.0
 
     for epoch in range(1, train_cfg["epochs"] + 1):
+        # 에폭마다 SNR 추첨을 바꾼다 — 같은 발화가 깨끗할 때도 오염될 때도 있어야 증강이다.
+        # 안 부르면 전 에폭이 같은 조건이 되고, 그건 증강이 아니라 도메인 이동이다.
+        train_ds.set_epoch(epoch)
         train_metrics = run_epoch(model, train_loader, device, train_loss_fn, optimizer,
                                   log_label=f"epoch {epoch:03d} train",
                                   aux_loss_fn=aux_loss_fn, aux_weight=aux_weight)

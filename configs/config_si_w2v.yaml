@@ -90,3 +90,8 @@ train:
   # 동결 wav2vec2 가중치다. 스냅샷의 원래 용도였던 SWA는 두 차례 시도 끝에 효과 없음으로
   # 결론났고(8.15.3절) 그 외 용도는 v6에서 한 번 썼을 뿐이라, 간격을 넓혀 낭비를 줄인다.
   checkpoint_interval: 20
+
+  # wav2vec2 출력 캐시(13.6절). v11 원본 학습은 파형 경로였다(24분/에폭). 캐시 경로는
+  # 로짓 5e-4 안에서 같고(tests/test_w2v_cache.py) 4.4분/에폭이다. v11 시드 43·44를
+  # 돌릴 때부터 이 경로다 — run_info.json의 w2v_cache_dir로 어느 경로였는지 남는다.
+  w2v_cache_dir: "data/w2v_cache"

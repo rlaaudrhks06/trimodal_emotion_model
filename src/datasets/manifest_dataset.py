@@ -151,6 +151,7 @@ class ManifestEmotionDataset(Dataset):
         noise_aug_snrs: list[float] | None = None,
         noisy_prosody_dir: str | Path | None = None,
         w2v_cache_dir: str | Path | None = None,
+        noise_aug_clean_ratio: float | None = None,
     ):
         import pandas as pd
 
@@ -191,6 +192,12 @@ class ManifestEmotionDataset(Dataset):
         # 이게 없으면 매 에폭 librosa.pyin(0.80초/건)과 얼굴 JPEG 216만 장이 다시 돌아
         # 에폭이 24분 -> 60~90분이 된다.
         self.noise_aug_snrs = list(noise_aug_snrs) if noise_aug_snrs else None
+        # 깨끗하게 남길 비율. None이면 균등(SNR N개 + 깨끗 1 -> 1/(N+1), v11a가 쓴 값).
+        # v11a에서 깨끗 조건이 -0.84%p 빠졌는데(McNemar p=0.024) 그게 깨끗 표본이 25%로
+        # 줄어든 탓인지 보려고 올릴 수 있게 한다. 나머지 확률은 SNR들이 균등하게 나눈다.
+        if noise_aug_clean_ratio is not None and not (0.0 < noise_aug_clean_ratio < 1.0):
+            raise ValueError(f"noise_aug_clean_ratio는 (0, 1) 사이여야 한다: {noise_aug_clean_ratio}")
+        self.noise_aug_clean_ratio = noise_aug_clean_ratio
         self.epoch = 0
         self._noisy_idx: dict[float, dict[str, int]] = {}
         self._noisy_arr: dict[float, np.ndarray] = {}
@@ -322,9 +329,17 @@ class ManifestEmotionDataset(Dataset):
         """
         if not self.noise_aug_snrs:
             return self.noise_snr_db          # 평가용 고정 SNR, 또는 None
-        choices = [None, *self.noise_aug_snrs]
-        i = _utt_seed(f"{utt_id}#{self.epoch}", base=NOISE_PICK_BASE) % len(choices)
-        return choices[i]
+        h = _utt_seed(f"{utt_id}#{self.epoch}", base=NOISE_PICK_BASE)
+        if self.noise_aug_clean_ratio is None:
+            choices = [None, *self.noise_aug_snrs]
+            return choices[h % len(choices)]
+        # 해시를 [0,1)로 펴서 앞 구간은 깨끗, 나머지를 SNR들이 균등 분할. 같은 해시를
+        # 쓰므로 clean_ratio를 안 주면 위와 완전히 같은 추첨이 나온다(v11a 재현 유지).
+        u = h / 2**32
+        if u < self.noise_aug_clean_ratio:
+            return None
+        k = int((u - self.noise_aug_clean_ratio) / (1.0 - self.noise_aug_clean_ratio) * len(self.noise_aug_snrs))
+        return self.noise_aug_snrs[min(k, len(self.noise_aug_snrs) - 1)]
 
     def _compute_features(self, row, snr_db: float | None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         y, sr = librosa.load(

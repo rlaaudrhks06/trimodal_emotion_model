@@ -210,12 +210,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=str(Path(__file__).resolve().parent.parent / "configs" / "config.yaml"))
     parser.add_argument("--seed", type=int, default=42, help="재현성/버전 간 비교 노이즈 축소용 — 같은 config를 다른 seed로 여러 번 돌려 결과 폭을 확인할 때 바꿔서 사용")
+    parser.add_argument("--checkpoint-dir", type=str, default=None,
+                        help="config의 checkpoint_dir을 덮어쓴다. 같은 config를 시드만 바꿔 여러 번 돌릴 때 "
+                             "best_model.pt가 서로 덮어쓰지 않게 하려는 것(periodic도 같은 이름+_periodic).")
     args = parser.parse_args()
 
     set_seed(args.seed)
 
     cfg = load_config(Path(args.config))
     train_cfg = cfg.raw["train"]
+    if args.checkpoint_dir:
+        train_cfg["checkpoint_dir"] = args.checkpoint_dir
+        train_cfg["periodic_checkpoint_dir"] = args.checkpoint_dir + "_periodic"
 
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
     print(f"[train] device = {device}, seed = {args.seed}")
@@ -240,6 +246,7 @@ def main():
         noise_aug_snrs=noise_aug_snrs,
         noisy_prosody_dir=train_cfg.get("noisy_prosody_dir"),
         w2v_cache_dir=w2v_cache_dir,
+        noise_aug_clean_ratio=train_cfg.get("noise_aug_clean_ratio"),
     )
     val_ds = ManifestEmotionDataset(train_cfg["val_manifest"], cfg, **ds_kwargs, w2v_cache_dir=w2v_cache_dir)
     if need_wav:
@@ -354,6 +361,9 @@ def main():
         # 캐시 경로로 학습한 run은 파형 경로와 wav2vec2 값이 1e-3 수준으로 다르다(13.6절).
         # 어느 경로였는지 남겨야 나중에 두 run을 비교할 때 조건이 같은지 알 수 있다.
         "w2v_cache_dir": w2v_cache_dir,
+        "checkpoint_dir": train_cfg["checkpoint_dir"],
+        "noise_aug_snrs": noise_aug_snrs,
+        "noise_aug_clean_ratio": train_cfg.get("noise_aug_clean_ratio"),
         **code_provenance(),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[train] 실행 정보 기록: {ckpt_dir / 'run_info.json'} (seed={args.seed})")

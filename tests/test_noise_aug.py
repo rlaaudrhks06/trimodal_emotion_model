@@ -100,6 +100,29 @@ def test_snr_draw_changes_with_epoch(ds):
     print(f"  ✅ 에폭별 추첨 변화 · 20에폭에서 {len(seqs)}종 · 조건 {sorted(drawn, key=str)}")
 
 
+def test_clean_ratio(ds):
+    """noise_aug_clean_ratio — 안 주면 v11a 추첨 그대로, 주면 그 비율만큼 깨끗."""
+    utts = [f"u{i}" for i in range(20000)]
+    ds.set_epoch(3)
+    old = ds.noise_aug_clean_ratio
+    try:
+        ds.noise_aug_clean_ratio = None
+        base = [ds._snr_for(u) for u in utts]
+        frac = base.count(None) / len(base)
+        assert abs(frac - 0.25) < 0.02, f"기본 깨끗 비율 {frac:.3f} (1/4이어야)"
+        ds.noise_aug_clean_ratio = 0.5
+        half = [ds._snr_for(u) for u in utts]
+        frac = half.count(None) / len(half)
+        assert abs(frac - 0.5) < 0.02, f"ratio=0.5인데 깨끗 비율 {frac:.3f}"
+        snr_counts = {s: half.count(s) for s in SNRS}
+        lo, hi = min(snr_counts.values()), max(snr_counts.values())
+        assert hi - lo < 0.02 * len(half), f"SNR 배분이 균등하지 않다: {snr_counts}"
+        assert set(half) - {None} == set(SNRS)
+    finally:
+        ds.noise_aug_clean_ratio = old
+    print(f"  ✅ 깨끗 비율: 기본 {base.count(None)/len(base):.3f} · ratio=0.5 -> {half.count(None)/len(half):.3f} · SNR 균등")
+
+
 def test_prosody_matches_returned_waveform(ds):
     """**핵심.** 돌려준 운율 == 돌려준 파형에서 뽑은 운율.
 
@@ -344,6 +367,7 @@ def main() -> int:
             noise_aug_snrs=SNRS, noisy_prosody_dir=td,
         )
         test_snr_draw_changes_with_epoch(ds)
+        test_clean_ratio(ds)
         test_prosody_matches_returned_waveform(ds)
         test_clean_draw_is_actually_clean(ds)
         test_guards(cfg, mini, td)

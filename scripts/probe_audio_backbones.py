@@ -56,7 +56,7 @@ from src.eval_report import code_provenance                 # noqa: E402
 COARSE = {"happy": "긍정", "surprise": "긍정", "angry": "부정", "disgust": "부정",
           "fear": "부정", "sad": "부정", "neutral": "중립"}
 BACKBONES = {
-    "xlsr53":  ("facebook/wav2vec2-large-xlsr-53", [8, 12, 16, 24]),
+    "xlsr53":  ("facebook/wav2vec2-large-xlsr-53", [8, 12, 16, 18, 20, 22, 24]),
     "wavlm":   ("microsoft/wavlm-large",           [6, 12, 18, 24]),
     "hubert":  ("facebook/hubert-large-ll60k",     [6, 12, 18, 24]),
     "whisper": ("openai/whisper-large-v3",         [16, 24, 32]),
@@ -104,7 +104,9 @@ def make_extractor(name: str, hf_id: str, layers: list[int], dev):
     if name == "whisper":
         from transformers import WhisperModel, WhisperFeatureExtractor
         fe = WhisperFeatureExtractor.from_pretrained(hf_id)
-        model = WhisperModel.from_pretrained(hf_id).encoder.to(dev).eval()
+        # transformers 5.x는 체크포인트 dtype(fp16)으로 올린다 — fp32 입력과 부딪혀
+        # "Input type (float) and bias type (Half)"로 죽는다. fp32로 강제한다.
+        model = WhisperModel.from_pretrained(hf_id, torch_dtype=torch.float32).encoder.to(dev).eval()
         # Whisper 인코더는 30초 로그멜(3000프레임)을 받고 1500프레임을 낸다(20ms).
         # 유효 프레임 = 샘플 수 / 320. 나머지는 패딩이라 평균에서 뺀다.
         def run(wav, mask):
@@ -114,7 +116,7 @@ def make_extractor(name: str, hf_id: str, layers: list[int], dev):
             lens = (mask.sum(1) // 320).clamp(min=1).to(dev)
             return {l: masked_mean(out.hidden_states[l], lens) for l in layers}
         return run
-    model = AutoModel.from_pretrained(hf_id).to(dev).eval()
+    model = AutoModel.from_pretrained(hf_id, torch_dtype=torch.float32).to(dev).eval()
     fe = AutoFeatureExtractor.from_pretrained(hf_id)
     do_norm = getattr(fe, "do_normalize", False)
     use_mask = getattr(fe, "return_attention_mask", False)
@@ -171,6 +173,9 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", default="results/probe_audio_backbones.json")
+    ap.add_argument("--combos", default="12+24,16+24,12+18+24",
+                    help="같은 백본 안에서 층을 이어붙여 재본다(쉼표 구분, 층은 +로). 해당 층이 다 있을 때만")
+    ap.add_argument("--save-feats", default=None, help="추출 특징을 npz로 저장(재프로브용)")
     args = ap.parse_args()
 
     torch.backends.cudnn.allow_tf32 = False; torch.backends.cuda.matmul.allow_tf32 = False
@@ -203,6 +208,17 @@ def main() -> int:
             a7, a3 = probe(Ftr[l], ytr, Fva[l], yva)
             results[f"{name}/L{l}"] = {"acc7": a7, "acc3": a3, "hidden": int(Ftr[l].shape[1])}
             print(f"  {name:8s} L{l:<3d}  7클래스 {a7*100:6.2f}%  3클래스 {a3*100:6.2f}%   (우연 {chance*100:.1f})", flush=True)
+        for combo in [c for c in args.combos.split(",") if c]:
+            ls = [int(x) for x in combo.split("+")]
+            if not all(l in layers for l in ls):
+                continue
+            Xtr = np.concatenate([Ftr[l] for l in ls], 1); Xva = np.concatenate([Fva[l] for l in ls], 1)
+            a7, a3 = probe(Xtr, ytr, Xva, yva)
+            results[f"{name}/L{combo}"] = {"acc7": a7, "acc3": a3, "hidden": int(Xtr.shape[1])}
+            print(f"  {name:8s} L{combo:<6s}  7클래스 {a7*100:6.2f}%  3클래스 {a3*100:6.2f}%   (결합)", flush=True)
+        if args.save_feats:
+            np.savez_compressed(f"{args.save_feats}_{name}.npz", ytr=ytr, yva=yva,
+                                **{f"tr_L{l}": Ftr[l] for l in layers}, **{f"va_L{l}": Fva[l] for l in layers})
         print(f"  [{name}] 추출 {t_ext/60:.1f}분\n")
         del run; torch.cuda.empty_cache()
 

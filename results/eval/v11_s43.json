@@ -1,0 +1,138 @@
+{
+  "name": "v11_s43",
+  "evaluated_at": "2026-09-13T02:02:44+09:00",
+  "manifest": "data/manifests_si/test.csv",
+  "models": [
+    {
+      "config": "configs/config_si_w2v.yaml",
+      "checkpoint": "checkpoints_v11_s43/best_model.pt"
+    }
+  ],
+  "git_commit": "4a75f31",
+  "git_branch": "main",
+  "git_dirty": false,
+  "python": "3.12.3",
+  "torch": "2.14.0+cu130",
+  "accuracy": 0.45089,
+  "weighted_f1": 0.433322,
+  "macro_f1": 0.39303,
+  "n_samples": 11464,
+  "labels": [
+    "angry",
+    "disgust",
+    "fear",
+    "happy",
+    "sad",
+    "surprise",
+    "neutral"
+  ],
+  "confusion_matrix": [
+    [
+      493,
+      278,
+      13,
+      34,
+      46,
+      88,
+      11
+    ],
+    [
+      446,
+      1220,
+      112,
+      315,
+      437,
+      457,
+      108
+    ],
+    [
+      38,
+      164,
+      98,
+      76,
+      130,
+      145,
+      28
+    ],
+    [
+      65,
+      238,
+      31,
+      1708,
+      119,
+      211,
+      93
+    ],
+    [
+      34,
+      316,
+      76,
+      125,
+      461,
+      108,
+      59
+    ],
+    [
+      90,
+      151,
+      61,
+      209,
+      63,
+      983,
+      43
+    ],
+    [
+      44,
+      260,
+      53,
+      447,
+      194,
+      279,
+      206
+    ]
+  ],
+  "per_class": {
+    "angry": {
+      "precision": 0.40743801652892564,
+      "recall": 0.5119418483904465,
+      "f1-score": 0.45375057524160145,
+      "support": 963.0
+    },
+    "disgust": {
+      "precision": 0.46440807004187284,
+      "recall": 0.39418416801292405,
+      "f1-score": 0.4264243271583362,
+      "support": 3095.0
+    },
+    "fear": {
+      "precision": 0.22072072072072071,
+      "recall": 0.14432989690721648,
+      "f1-score": 0.1745325022261799,
+      "support": 679.0
+    },
+    "happy": {
+      "precision": 0.5861358956760466,
+      "recall": 0.6929006085192698,
+      "f1-score": 0.6350622792340583,
+      "support": 2465.0
+    },
+    "sad": {
+      "precision": 0.3179310344827586,
+      "recall": 0.39100932994062765,
+      "f1-score": 0.3507036896158235,
+      "support": 1179.0
+    },
+    "surprise": {
+      "precision": 0.4328489652135623,
+      "recall": 0.614375,
+      "f1-score": 0.5078791010074916,
+      "support": 1600.0
+    },
+    "neutral": {
+      "precision": 0.3759124087591241,
+      "recall": 0.13890761968981793,
+      "f1-score": 0.20285573609059576,
+      "support": 1483.0
+    }
+  }
+}

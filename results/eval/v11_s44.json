@@ -1,0 +1,138 @@
+{
+  "name": "v11_s44",
+  "evaluated_at": "2026-09-13T02:02:44+09:00",
+  "manifest": "data/manifests_si/test.csv",
+  "models": [
+    {
+      "config": "configs/config_si_w2v.yaml",
+      "checkpoint": "checkpoints_v11_s44/best_model.pt"
+    }
+  ],
+  "git_commit": "4a75f31",
+  "git_branch": "main",
+  "git_dirty": false,
+  "python": "3.12.3",
+  "torch": "2.14.0+cu130",
+  "accuracy": 0.44269,
+  "weighted_f1": 0.433404,
+  "macro_f1": 0.411165,
+  "n_samples": 11464,
+  "labels": [
+    "angry",
+    "disgust",
+    "fear",
+    "happy",
+    "sad",
+    "surprise",
+    "neutral"
+  ],
+  "confusion_matrix": [
+    [
+      526,
+      201,
+      30,
+      40,
+      52,
+      74,
+      40
+    ],
+    [
+      565,
+      849,
+      198,
+      367,
+      540,
+      326,
+      250
+    ],
+    [
+      44,
+      94,
+      164,
+      69,
+      152,
+      89,
+      67
+    ],
+    [
+      57,
+      149,
+      36,
+      1702,
+      156,
+      150,
+      215
+    ],
+    [
+      48,
+      198,
+      86,
+      112,
+      544,
+      74,
+      117
+    ],
+    [
+      86,
+      122,
+      105,
+      215,
+      101,
+      855,
+      116
+    ],
+    [
+      37,
+      166,
+      65,
+      418,
+      199,
+      163,
+      435
+    ]
+  ],
+  "per_class": {
+    "angry": {
+      "precision": 0.3859134262655906,
+      "recall": 0.5462097611630322,
+      "f1-score": 0.4522785898538263,
+      "support": 963.0
+    },
+    "disgust": {
+      "precision": 0.4772344013490725,
+      "recall": 0.274313408723748,
+      "f1-score": 0.3483791546983997,
+      "support": 3095.0
+    },
+    "fear": {
+      "precision": 0.23976608187134502,
+      "recall": 0.24153166421207659,
+      "f1-score": 0.24064563462949376,
+      "support": 679.0
+    },
+    "happy": {
+      "precision": 0.5822784810126582,
+      "recall": 0.6904665314401622,
+      "f1-score": 0.6317743132887899,
+      "support": 2465.0
+    },
+    "sad": {
+      "precision": 0.3119266055045872,
+      "recall": 0.46140797285835455,
+      "f1-score": 0.3722203215874102,
+      "support": 1179.0
+    },
+    "surprise": {
+      "precision": 0.49393414211438474,
+      "recall": 0.534375,
+      "f1-score": 0.5133593515460823,
+      "support": 1600.0
+    },
+    "neutral": {
+      "precision": 0.35080645161290325,
+      "recall": 0.2933243425488874,
+      "f1-score": 0.3195005508630187,
+      "support": 1483.0
+    }
+  }
+}

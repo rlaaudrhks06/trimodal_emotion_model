@@ -31,7 +31,7 @@ from robot.brain.preprocess import build_batch            # noqa: E402
 KO = {"angry": "분노", "disgust": "혐오", "fear": "공포", "happy": "행복",
       "sad": "슬픔", "surprise": "놀람", "neutral": "중립"}
 
-# 8.29.3절에서 측정한 매핑. 로봇 행동은 이 해상도면 충분할 수 있다(3클래스 67.34%).
+# 8.29.3절에서 측정한 매핑. 로봇 행동은 이 해상도면 충분할 수 있다(3클래스 68.58%, 확률합 방식).
 COARSE = {"happy": "긍정", "surprise": "긍정",
           "angry": "부정", "disgust": "부정", "fear": "부정", "sad": "부정",
           "neutral": "중립"}
@@ -149,7 +149,9 @@ class EmotionEngine:
         # coarse 확률은 **그룹에 속한 감정들의 확률을 더한 값**이다. 7클래스에서
         # 슬픔 30·혐오 25·분노 15로 흩어져 있어도 "부정"으로는 70이 된다.
         # 로봇 행동이 3클래스 해상도로 결정된다면 이쪽이 실제 확신도에 가깝고,
-        # 정확도도 7클래스 46.19%가 아니라 3클래스 67.34%가 적용된다(8.29.3절).
+        # 정확도도 7클래스 46.19%가 아니라 3클래스가 적용된다 — 이 방식(확률합)으로
+        # v11 68.58%, v11a 3시드 평균 68.10%(scripts/analyze_predictions.py). 문서의
+        # 67.34%는 argmax를 묶는 옛 계산이라 이 엔진보다 1.2%p 낮다.
         cp: dict[str, float] = {}
         for j, e in enumerate(EMOTION_LABELS):
             cp[COARSE[e]] = cp.get(COARSE[e], 0.0) + float(p[j])

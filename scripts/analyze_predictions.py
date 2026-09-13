@@ -138,23 +138,48 @@ def report_speakers(df: pd.DataFrame, min_utts: int) -> None:
               f"{', '.join(lo.index[:10])}{' ...' if len(lo) > 10 else ''}")
 
 
+def coarse_from_probs(df: pd.DataFrame) -> pd.Series:
+    """7클래스 확률을 그룹별로 **합친 뒤** 가장 큰 그룹 — robot/brain/engine.py가 쓰는 방식.
+
+    argmax 하나만 보고 묶는 것과 다르다: happy 0.30·angry 0.25·sad 0.25·fear 0.15면
+    argmax는 happy -> "긍정"이지만 부정 확률 합이 0.65다. 실측으로 이 차이가 1.2~2.2%p다.
+    """
+    groups = sorted(set(COARSE.values()))
+    cols = {g: [f"p_{e}" for e in EMOTION_LABELS if COARSE[e] == g] for g in groups}
+    sums = pd.DataFrame({g: df[c].sum(axis=1) for g, c in cols.items()})
+    return sums.idxmax(axis=1)
+
+
 def report_coarse(df: pd.DataFrame) -> None:
-    """7클래스 예측을 묶기만 해서 얻는 정확도(8.29.3절). 재학습이 아니다."""
+    """3클래스 정확도 — **두 방식을 같이** 보인다. 재학습이 아니다.
+
+    [사건] 이 함수가 argmax를 묶는 방식만 재서 67.34%(v11)를 냈고 그 숫자가 README·
+    모델카드·엔진 주석에 실렸다. 그런데 배포 엔진(robot/brain/engine.py)은 확률을
+    합치는 방식이라 실제로는 68.58%다 — 문서가 배포 경로를 1.2%p 낮게 적고 있었다.
+    엔진 방식을 주 수치로, argmax 묶기를 참고로 둔다.
+    """
     idx2 = {i: COARSE[e] for i, e in enumerate(EMOTION_LABELS)}
     t = df["label"].map(idx2)
-    p = df["pred"].map(idx2)
-    acc, half = acc_ci(int((t == p).sum()), len(df))
+    p_arg = df["pred"].map(idx2)
+    has_probs = all(f"p_{e}" in df.columns for e in EMOTION_LABELS)
+    p_sum = coarse_from_probs(df) if has_probs else None
     base = t.value_counts().iloc[0] / len(df)
     print("\n" + "=" * 70)
     print("클래스 체계 재매핑 — 출력만 묶었을 때 (재학습 없음)")
     print("=" * 70)
     print("  긍정=행복·놀람 / 부정=분노·혐오·공포·슬픔 / 중립=중립")
-    print(f"  정확도 {100*acc:.2f}% (±{100*half:.2f}%p)  최다클래스 기준선 {100*base:.2f}%  "
-          f"정규화이득 {100*(acc-base)/(1-base):.1f}%")
-    for grp in sorted(set(COARSE.values())):
-        sel = t == grp
-        rec, _ = acc_ci(int((p[sel] == grp).sum()), int(sel.sum()))
-        print(f"    {grp:6} n={int(sel.sum()):>6,}  재현율 {100*rec:.1f}%")
+    for label, p in (("확률합 -> argmax (엔진 방식, 주 수치)", p_sum), ("argmax -> 묶기 (참고)", p_arg)):
+        if p is None:
+            print(f"  [{label}] 확률 컬럼이 없어 계산 불가 — --save-predictions로 다시 평가할 것")
+            continue
+        acc, half = acc_ci(int((t == p).sum()), len(df))
+        print(f"  [{label}]")
+        print(f"    정확도 {100*acc:.2f}% (±{100*half:.2f}%p)  최다클래스 기준선 {100*base:.2f}%  "
+              f"정규화이득 {100*(acc-base)/(1-base):.1f}%")
+        for grp in sorted(set(COARSE.values())):
+            sel = t == grp
+            rec, _ = acc_ci(int((p[sel] == grp).sum()), int(sel.sum()))
+            print(f"      {grp:6} n={int(sel.sum()):>6,}  재현율 {100*rec:.1f}%")
 
 
 def report_short(df: pd.DataFrame, manifest: Path, max_chars: int) -> None:

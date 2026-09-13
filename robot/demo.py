@@ -238,7 +238,7 @@ def main():
     ap.add_argument("--decide-on", choices=["coarse", "7class"], default="coarse",
                     help="응답 여부를 무엇으로 판단할지. coarse는 긍정/부정/중립 그룹의 "
                          "확률 합을 쓴다 — 로봇 행동이 그 해상도로 결정되고 정확도도 "
-                         "67.34%로 높다(8.29.3절)")
+                         "68.58%로 높다(8.29.3절, 확률합 방식)")
     ap.add_argument("--silence-sec", type=float, default=1.4,
                     help="이만큼 조용하면 발화가 끝난 것으로 본다. 발표하듯 말하면 "
                          "1.4~2.0초가 적당하고, 짧으면 문장 사이 호흡에서 잘린다")

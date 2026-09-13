@@ -1,4 +1,4 @@
-# v11c — v11a + wav2vec2 24층. config_noise_aug.yaml(v11a)에서 **audio.layer 하나만** 바꾼 것.
+# v11c — v11a + wav2vec2 24층. config_noise_aug.yaml(v11a)에서 **audio.w2v_layer 하나만** 바꾼 것.
 # 모델 구조·파라미터·분할·선택 기준은 v11과 같고 학습 데이터가 보는 조건만 다르다.
 # v13a~d(융합 설계 애블레이션)와 목적이 달라 v11의 변형으로 이름 붙였다.
 # 오디오 백본만 멜 -> wav2vec2로 바꾼 것.

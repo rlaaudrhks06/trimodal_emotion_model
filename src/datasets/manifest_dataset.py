@@ -355,10 +355,27 @@ class ManifestEmotionDataset(Dataset):
             n_fft=self.cfg.audio_n_fft, hop_length=self.cfg.audio_hop_length,
         )  # [T_a, n_mels]
         prosody = extract_prosody(y, sr)  # [prosody_dim]
-        frames = load_face_frames(
-            row.face_frames_dir, face_size=self.cfg.visual_face_size, max_frames=self.max_video_frames
-        )  # [T_v, 3, H, W]
+        frames = self._load_frames_or_blank(row)  # [T_v, 3, H, W]
         return mel, prosody, frames
+
+    def _load_frames_or_blank(self, row) -> np.ndarray:
+        """얼굴 프레임을 읽되, **영상이 없는 발화**면 검은 프레임 1장을 준다.
+
+        영상 없는 데이터(AI Hub 263 대화 음성, 13.12절)를 train에 섞기 위한 경로다.
+        검은 프레임 1장 + 유효 마스크는 모달리티 드롭아웃이 영상을 지울 때
+        (frames.zero_(), 마스크 유지) 모델이 보는 입력과 **정확히 같다** — 새 개념이
+        아니라 이미 학습한 "카메라가 죽은 상황"이다. 프레임 수를 0으로 하면 collate의
+        _pad_time이 빈 시퀀스를 못 다루고, 마스크를 전부 패딩으로 하면 어텐션이 NaN을
+        낸다. 그래서 1장·유효로 둔다.
+
+        빈 값의 기준: NaN 또는 공백. 경로가 있는데 파일이 없으면 여전히 에러다 —
+        "영상이 있어야 하는데 없는" 사고를 조용히 넘기지 않는다.
+        """
+        d = row.face_frames_dir
+        if d is None or (isinstance(d, float) and np.isnan(d)) or str(d).strip() == "":
+            s = self.cfg.visual_face_size
+            return np.zeros((1, 3, s, s), dtype=np.uint8)
+        return load_face_frames(str(d), face_size=self.cfg.visual_face_size, max_frames=self.max_video_frames)
 
     def __getitem__(self, idx: int) -> dict:
         row = self.df.iloc[idx]

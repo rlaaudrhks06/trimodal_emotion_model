@@ -57,6 +57,7 @@ class Config:
     audio_pretrained: str
     audio_w2v_layer: int
     audio_w2v_freeze: bool
+    audio_w2v_finetune_layers: int
     audio_sample_rate: int
     audio_n_mels: int
     audio_n_fft: int
@@ -85,6 +86,8 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         audio_pretrained=audio_raw.get("pretrained_model", "facebook/wav2vec2-large-xlsr-53"),
         audio_w2v_layer=audio_raw.get("w2v_layer", 12),
         audio_w2v_freeze=audio_raw.get("w2v_freeze", True),
+        # 13.13절: 꺼내는 층(w2v_layer) 바로 아래 N개 트랜스포머 층만 학습. 0이면 v1~v11d와 동일(전부 동결).
+        audio_w2v_finetune_layers=int(audio_raw.get("w2v_finetune_layers", 0)),
         audio_sample_rate=audio_raw["sample_rate"],
         audio_n_mels=raw["audio"]["n_mels"],
         audio_n_fft=raw["audio"]["n_fft"],

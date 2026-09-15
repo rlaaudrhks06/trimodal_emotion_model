@@ -241,6 +241,10 @@ def main():
     # wav2vec2 출력 캐시(13.6절). train은 증강 조건까지, val은 깨끗 조건만 읽는다
     # (val에 noise_aug_snrs를 안 넘기므로 자동으로 clean만 확인한다).
     w2v_cache_dir = train_cfg.get("w2v_cache_dir")
+    if cfg.audio_w2v_finetune_layers > 0 and w2v_cache_dir:
+        # 캐시는 동결 wav2vec2의 출력을 미리 뽑은 것이다. 미세조정 층이 있는데 캐시를 읽으면
+        # 그 층들이 forward에서 빠져 gradient가 0 — "미세조정했다"는 실험이 조용히 동결 실험이 된다.
+        raise ValueError("audio.w2v_finetune_layers>0 이면 train.w2v_cache_dir을 둘 수 없다 — 파형 경로로 학습해야 한다")
     train_ds = ManifestEmotionDataset(
         train_cfg["train_manifest"], cfg, **ds_kwargs,
         noise_aug_snrs=noise_aug_snrs,
@@ -286,17 +290,26 @@ def main():
     # 안 주면 기존과 동일하게 단일 lr로 동작(하위 호환).
     bert_lr = train_cfg.get("bert_lr", train_cfg["lr"])
     bert_params = [p for n, p in model.named_parameters() if n.startswith("text_backbone.bert.") and p.requires_grad]
-    other_params = [p for n, p in model.named_parameters() if not n.startswith("text_backbone.bert.") and p.requires_grad]
+    # wav2vec2 부분 미세조정(13.13절): 그 층들은 별도 낮은 lr(w2v_lr, 기본 2e-5 — BERT 미세조정
+    # 관행)로 움직인다. 그룹을 [2]로 **뒤에** 붙인다 — 아래 스케줄러·로그가 [0]=bert, [1]=본체를
+    # 인덱스로 참조하므로 앞에 끼우면 조용히 엇갈린다.
+    w2v_lr = train_cfg.get("w2v_lr", 2e-5)
+    w2v_params = [p for n, p in model.named_parameters() if n.startswith("audio_backbone.w2v.") and p.requires_grad]
+    other_params = [p for n, p in model.named_parameters()
+                    if not n.startswith("text_backbone.bert.") and not n.startswith("audio_backbone.w2v.") and p.requires_grad]
     print(
         f"[train] param groups: bert={sum(p.numel() for p in bert_params):,}개(lr={bert_lr:.1e}), "
         f"other={sum(p.numel() for p in other_params):,}개(lr={train_cfg['lr']:.1e})",
         flush=True,
     )
+    if w2v_params:
+        rng = model.audio_backbone.finetune_range
+        print(f"[train] wav2vec2 부분 미세조정: {rng[0]}~{rng[1]}층 {sum(p.numel() for p in w2v_params):,}개 (lr={w2v_lr:.1e})", flush=True)
     optimizer = torch.optim.AdamW(
         [
             {"params": bert_params, "lr": bert_lr},
             {"params": other_params, "lr": train_cfg["lr"]},
-        ],
+        ] + ([{"params": w2v_params, "lr": w2v_lr}] if w2v_params else []),
         weight_decay=train_cfg["weight_decay"],
     )
 
@@ -364,6 +377,8 @@ def main():
         "checkpoint_dir": train_cfg["checkpoint_dir"],
         "noise_aug_snrs": noise_aug_snrs,
         "noise_aug_clean_ratio": train_cfg.get("noise_aug_clean_ratio"),
+        "w2v_finetune_layers": cfg.audio_w2v_finetune_layers,
+        "w2v_lr": w2v_lr if cfg.audio_w2v_finetune_layers > 0 else None,
         **code_provenance(),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[train] 실행 정보 기록: {ckpt_dir / 'run_info.json'} (seed={args.seed})")

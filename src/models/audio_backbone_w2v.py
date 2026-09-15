@@ -39,6 +39,7 @@ class Wav2Vec2AudioBackbone(nn.Module):
     def __init__(
         self, pretrained_model: str, d_model: int, n_heads: int, ffn_dim: int,
         n_layers: int = 2, layer: int = 12, dropout: float = 0.1, freeze: bool = True,
+        finetune_layers: int = 0,
     ):
         super().__init__()
         self.w2v = Wav2Vec2Model.from_pretrained(pretrained_model)
@@ -57,6 +58,32 @@ class Wav2Vec2AudioBackbone(nn.Module):
             self.w2v.eval()
             for p in self.w2v.parameters():
                 p.requires_grad = False
+
+        # ── 부분 미세조정(13.13절): 꺼내는 층 바로 아래 N개 트랜스포머 층만 학습한다.
+        #
+        # "상위 N층"이 아니다. hidden_states[layer]를 쓰므로 layer보다 위의 층은 출력에
+        # 영향이 없다 — 21~24층을 풀면 아무것도 안 배운다. layer=12, N=4면 9~12층이다.
+        #
+        # v1~v11d까지 전부 동결이었고(2.5M~8.7M만 학습), 프로브(13.11절)는 오디오 표현에
+        # 여지가 있다고 했는데 층 바꾸기·백본 교체로는 못 꺼냈다. 학습으로 꺼내는 것이
+        # 남은 레버다. v7(BERT 전체 미세조정)이 과적합했으므로 N을 작게, lr을 낮게 둔다.
+        #
+        # w2v는 여전히 eval 모드로 둔다 — LayerDrop(0.1)·드롭아웃이 켜지면 "동결 대비
+        # 무엇이 달라졌나"에 변수가 둘이 된다. 가중치만 움직인다.
+        self.finetune_layers = int(finetune_layers)
+        if self.finetune_layers > 0:
+            if not freeze:
+                raise ValueError("finetune_layers는 freeze=True(부분 동결)와 함께 쓴다 — freeze=False는 전체 미세조정")
+            top = layer if layer > 0 else n_w2v_layers + 1 + layer   # 음수 인덱스 정규화
+            lo = top - self.finetune_layers
+            if lo < 0:
+                raise ValueError(f"finetune_layers={self.finetune_layers}가 꺼내는 층({top})보다 많다")
+            for blk in self.w2v.encoder.layers[lo:top]:
+                for p in blk.parameters():
+                    p.requires_grad = True
+            self.finetune_range = (lo + 1, top)   # 사람이 읽는 1-based 층 번호
+        else:
+            self.finetune_range = None
 
         # wav2vec2의 hidden(예: 1024)을 d_model로 맞춘 뒤, 기존 경로와 동일하게
         # TemporalConvFrontend를 태운다 — 위치 인코딩·시간 컨텍스트 처리를 재사용.
@@ -188,11 +215,13 @@ class Wav2Vec2AudioBackbone(nn.Module):
         wav_attention_mask: torch.Tensor | None = None,  # [B, T_samples] 1=유효
         key_padding_mask: torch.Tensor | None = None,    # [B, T_a] True=패딩. 생략 시 내부 계산
     ) -> torch.Tensor:
-        if self.freeze:
+        if self.freeze and self.finetune_layers == 0:
             with torch.no_grad():
                 h = self._extract(waveform, wav_attention_mask)
             h = h.detach()
         else:
+            # 부분 미세조정: 동결된 하위 층은 파라미터·입력 모두 grad가 없어 autograd가
+            # 그래프를 안 만든다 — 메모리는 학습 층 분만 든다. detach하면 안 된다.
             h = self._extract(waveform, wav_attention_mask)
 
         # 프론트엔드의 트랜스포머가 패딩 위치까지 어텐션하면 유효 구간 출력이 오염된다.

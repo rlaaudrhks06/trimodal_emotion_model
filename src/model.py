@@ -33,6 +33,7 @@ class TrimodalEmotionModel(nn.Module):
                 pretrained_model=cfg.audio_pretrained, d_model=m.d_model, n_heads=m.n_heads,
                 ffn_dim=m.ffn_dim, n_layers=m.backbone_layers, layer=cfg.audio_w2v_layer,
                 dropout=m.backbone_dropout, freeze=cfg.audio_w2v_freeze,
+                finetune_layers=cfg.audio_w2v_finetune_layers,
             )
         else:
             self.audio_backbone = AudioBackbone(

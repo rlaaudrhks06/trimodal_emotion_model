@@ -210,6 +210,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=str(Path(__file__).resolve().parent.parent / "configs" / "config.yaml"))
     parser.add_argument("--seed", type=int, default=42, help="재현성/버전 간 비교 노이즈 축소용 — 같은 config를 다른 seed로 여러 번 돌려 결과 폭을 확인할 때 바꿔서 사용")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="config의 epochs를 덮어쓴다. run_info.json에 기록된다 — 정점이 일찍 오는 미세조정 run에서 "
+                             "config를 복사하지 않고 길이만 줄이려는 것")
     parser.add_argument("--checkpoint-dir", type=str, default=None,
                         help="config의 checkpoint_dir을 덮어쓴다. 같은 config를 시드만 바꿔 여러 번 돌릴 때 "
                              "best_model.pt가 서로 덮어쓰지 않게 하려는 것(periodic도 같은 이름+_periodic).")
@@ -219,6 +222,8 @@ def main():
 
     cfg = load_config(Path(args.config))
     train_cfg = cfg.raw["train"]
+    if args.epochs:
+        train_cfg["epochs"] = args.epochs
     if args.checkpoint_dir:
         train_cfg["checkpoint_dir"] = args.checkpoint_dir
         train_cfg["periodic_checkpoint_dir"] = args.checkpoint_dir + "_periodic"
@@ -371,6 +376,7 @@ def main():
         "seed": args.seed,
         "config": args.config,
         "batch_size": train_cfg["batch_size"],
+        "epochs": train_cfg["epochs"],
         # 캐시 경로로 학습한 run은 파형 경로와 wav2vec2 값이 1e-3 수준으로 다르다(13.6절).
         # 어느 경로였는지 남겨야 나중에 두 run을 비교할 때 조건이 같은지 알 수 있다.
         "w2v_cache_dir": w2v_cache_dir,

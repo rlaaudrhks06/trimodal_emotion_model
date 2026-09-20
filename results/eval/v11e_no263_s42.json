@@ -1,0 +1,138 @@
+{
+  "name": "v11e_no263_s42",
+  "evaluated_at": "2026-09-20T09:30:14+09:00",
+  "manifest": "data/manifests_si/test.csv",
+  "models": [
+    {
+      "config": "configs/config_noise_aug_ft4.yaml",
+      "checkpoint": "checkpoints_v11e_no263_s42/best_model.pt"
+    }
+  ],
+  "git_commit": "85afe31",
+  "git_branch": "ft-ablation",
+  "git_dirty": false,
+  "python": "3.12.3",
+  "torch": "2.14.0+cu130",
+  "accuracy": 0.445918,
+  "weighted_f1": 0.439611,
+  "macro_f1": 0.402309,
+  "n_samples": 11464,
+  "labels": [
+    "angry",
+    "disgust",
+    "fear",
+    "happy",
+    "sad",
+    "surprise",
+    "neutral"
+  ],
+  "confusion_matrix": [
+    [
+      416,
+      314,
+      17,
+      42,
+      45,
+      101,
+      28
+    ],
+    [
+      371,
+      1165,
+      148,
+      352,
+      500,
+      377,
+      182
+    ],
+    [
+      27,
+      172,
+      120,
+      63,
+      130,
+      105,
+      62
+    ],
+    [
+      27,
+      197,
+      30,
+      1642,
+      177,
+      199,
+      193
+    ],
+    [
+      35,
+      269,
+      101,
+      115,
+      498,
+      75,
+      86
+    ],
+    [
+      59,
+      143,
+      98,
+      189,
+      95,
+      906,
+      110
+    ],
+    [
+      32,
+      237,
+      63,
+      367,
+      227,
+      192,
+      365
+    ]
+  ],
+  "per_class": {
+    "angry": {
+      "precision": 0.4301964839710445,
+      "recall": 0.43198338525441327,
+      "f1-score": 0.4310880829015544,
+      "support": 963.0
+    },
+    "disgust": {
+      "precision": 0.46655987184621545,
+      "recall": 0.3764135702746365,
+      "f1-score": 0.4166666666666667,
+      "support": 3095.0
+    },
+    "fear": {
+      "precision": 0.20797227036395147,
+      "recall": 0.17673048600883653,
+      "f1-score": 0.1910828025477707,
+      "support": 679.0
+    },
+    "happy": {
+      "precision": 0.5927797833935018,
+      "recall": 0.6661257606490872,
+      "f1-score": 0.627316141356256,
+      "support": 2465.0
+    },
+    "sad": {
+      "precision": 0.29784688995215314,
+      "recall": 0.4223918575063613,
+      "f1-score": 0.34935110487548227,
+      "support": 1179.0
+    },
+    "surprise": {
+      "precision": 0.46342710997442454,
+      "recall": 0.56625,
+      "f1-score": 0.509704641350211,
+      "support": 1600.0
+    },
+    "neutral": {
+      "precision": 0.3557504873294347,
+      "recall": 0.24612272420768713,
+      "f1-score": 0.2909525707453169,
+      "support": 1483.0
+    }
+  }
+}

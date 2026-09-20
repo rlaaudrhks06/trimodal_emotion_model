@@ -19,14 +19,14 @@ from sklearn.metrics import (
     accuracy_score, f1_score, confusion_matrix, classification_report,
 )
 
-from .datasets.labels import EMOTION_LABELS
+from .datasets.labels import EMOTION_LABELS, COARSE_LABELS
 
 DEFAULT_EVAL_DIR = Path("results/eval")
 DEFAULT_PRED_DIR = Path("results/predictions")
 
 
 def save_predictions(utt_ids, all_labels, all_preds, all_probs, name: str,
-                     out_dir: str | Path | None = None) -> Path:
+                     out_dir: str | Path | None = None, coarse_probs=None) -> Path:
     """발화 하나하나의 정답·예측·확률을 CSV로 남긴다.
 
     왜 필요한가(8.29.1절): v11과 v12b의 test 정확도 차이 0.97%p가 유의한지
@@ -57,6 +57,11 @@ def save_predictions(utt_ids, all_labels, all_preds, all_probs, name: str,
     })
     for i, emo in enumerate(EMOTION_LABELS):
         df[f"p_{emo}"] = [round(float(p[i]), 6) for p in all_probs]
+    if coarse_probs is not None:  # v11g 3클래스 머리 확률. 열 이름 p3_* 로 7클래스 p_* 와 구분
+        if len(coarse_probs) != n:
+            raise ValueError(f"길이 불일치: coarse_probs {len(coarse_probs)}, label {n}")
+        for i, c in enumerate(COARSE_LABELS):
+            df[f"p3_{c}"] = [round(float(p[i]), 6) for p in coarse_probs]
 
     # argmax(확률)과 저장된 pred가 어긋나면 둘 중 하나가 잘못 모인 것이다.
     prob_argmax = df[[f"p_{e}" for e in EMOTION_LABELS]].to_numpy().argmax(axis=1)

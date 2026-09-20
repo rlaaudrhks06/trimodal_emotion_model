@@ -17,6 +17,7 @@ from src.model import TrimodalEmotionModel
 from src.model_single_modality import SingleModalityModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn
 from src.eval_report import print_and_collect, save_eval_result, save_predictions
+from src.datasets.labels import COARSE_LABELS, COARSE_IDX_OF_LABEL_IDX
 from scripts.train import move_batch_to_device
 
 MODALITIES = ("audio", "visual", "text")
@@ -157,6 +158,7 @@ def main():
     noise_gen = torch.Generator(device=device).manual_seed(20260808)
 
     all_preds, all_labels, all_probs = [], [], []
+    all_coarse_probs = []  # v11g 3클래스 머리가 있을 때만 채운다
     with torch.no_grad():
         for batch in test_loader:
             batch = move_batch_to_device(batch, device)
@@ -185,7 +187,11 @@ def main():
                 model_inputs["waveform"] = batch["waveform"]
                 model_inputs["wav_attention_mask"] = batch["wav_attention_mask"]
             model_inputs = zero_modalities(model_inputs, drop)
-            logits = model(**model_inputs)
+            if getattr(model, "use_coarse", False):
+                logits, aux = model(**model_inputs, return_aux=True)
+                all_coarse_probs.extend(torch.softmax(aux["coarse"].float(), dim=-1).cpu().tolist())
+            else:
+                logits = model(**model_inputs)
             # 예측은 기존 그대로 로짓의 argmax로 뽑는다 — softmax는 단조라 결과가
             # 같지만, 지표 산출 경로를 건드리지 않기 위해 확률은 따로 계산한다.
             all_preds.extend(logits.argmax(dim=-1).cpu().tolist())
@@ -193,13 +199,27 @@ def main():
             all_labels.extend(batch["labels"].cpu().tolist())
 
     metrics = print_and_collect(all_labels, all_preds)
+    if all_coarse_probs:
+        # 3클래스 정확도 두 가지: ① 7클래스 확률을 묶어 합친 것(엔진 방식, v11~v11f의 기준)
+        # ② v11g 3클래스 머리가 직접 낸 것. ②가 ①을 1.3%p 이상 넘어야 머리가 값을 한 것이다.
+        import numpy as np
+        cmap = np.array(COARSE_IDX_OF_LABEL_IDX)
+        y3 = cmap[np.array(all_labels)]
+        P7 = np.array(all_probs)
+        summed = np.stack([P7[:, cmap == k].sum(1) for k in range(len(COARSE_LABELS))], 1)
+        acc_sum = float((summed.argmax(1) == y3).mean())
+        acc_head = float((np.array(all_coarse_probs).argmax(1) == y3).mean())
+        print(f"[evaluate] 3클래스 정확도 — 7클래스 확률합: {acc_sum*100:.2f}%  ·  3클래스 머리: {acc_head*100:.2f}%")
+        metrics["coarse_acc_from_7class_sum"] = acc_sum
+        metrics["coarse_acc_head"] = acc_head
 
     if args.save_predictions:
         # shuffle=False라 DataLoader가 도는 순서가 매니페스트 행 순서와 같다
         # (ManifestEmotionDataset.__getitem__이 self.df.iloc[idx]를 그대로 쓴다).
         # 그래서 데이터셋을 건드리지 않고 여기서 utt_id를 붙일 수 있다.
         save_predictions(test_ds.df["utt_id"].astype(str).tolist(),
-                         all_labels, all_preds, all_probs, name=args.save_as)
+                         all_labels, all_preds, all_probs, name=args.save_as,
+                         coarse_probs=all_coarse_probs or None)
 
     if args.save_as:
         extra = {}

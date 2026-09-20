@@ -35,7 +35,7 @@ if THROTTLE_CPU:
 from src.config import load_config
 from src.model import TrimodalEmotionModel
 from src.datasets.manifest_dataset import ManifestEmotionDataset, make_collate_fn, IGNORE_INDEX
-from src.datasets.labels import EMOTION_LABELS, LABEL_TO_IDX, normalize_label
+from src.datasets.labels import EMOTION_LABELS, LABEL_TO_IDX, COARSE_LABELS, COARSE_IDX_OF_LABEL_IDX, normalize_label
 
 
 def set_seed(seed: int) -> None:
@@ -107,8 +107,10 @@ def aux_loss(aux_logits: dict, batch: dict, loss_fn) -> torch.Tensor | None:
 
 
 def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "",
-              aux_loss_fn=None, aux_weight: float = 0.0) -> dict:
+              aux_loss_fn=None, aux_weight: float = 0.0,
+              coarse_loss_fn=None, coarse_weight: float = 0.0) -> dict:
     """aux_loss_fn과 aux_weight를 주면 v12 보조 손실을 함께 학습한다.
+    coarse_loss_fn과 coarse_weight를 주면 v11g 3클래스 머리 손실을 함께 학습한다(13.14절).
 
     둘 중 하나라도 없으면(기본) 보조 경로를 아예 타지 않아 v1~v11과 완전히 동일하다.
     검증(is_train=False) 시에는 보조 손실을 빼고 주 손실만 본다 — 체크포인트 선택과
@@ -116,6 +118,9 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "
     """
     is_train = optimizer is not None
     use_aux = is_train and aux_loss_fn is not None and aux_weight > 0
+    use_coarse = is_train and coarse_loss_fn is not None and coarse_weight > 0
+    coarse_map = torch.tensor(COARSE_IDX_OF_LABEL_IDX, device=device)
+    coarse_sum = 0.0
 
     model.train() if is_train else model.eval()
 
@@ -151,13 +156,22 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "
             if "audio_feat" in batch:
                 model_inputs["audio_feat"] = batch["audio_feat"]
                 model_inputs["audio_feat_padding_mask"] = batch["audio_feat_padding_mask"]
-            if use_aux:
+            if use_aux or use_coarse:
                 logits, aux_logits = model(**model_inputs, return_aux=True)
             else:
                 logits = model(**model_inputs)
                 aux_logits = {}
             main_loss = loss_fn(logits, batch["labels"])
             loss = main_loss
+
+            # v11g: 3클래스 정답은 7클래스 정답에서 유도한다. aux_loss()로 넘기기 전에 빼낸다 —
+            # 그쪽은 매니페스트 보조 라벨 전용이고 손실 가중치·클래스 가중치가 다르다.
+            coarse_logits = aux_logits.pop("coarse", None)
+            if use_coarse:
+                assert coarse_logits is not None, "coarse_loss_weight>0 인데 모델에 coarse 머리가 없다"
+                c = coarse_loss_fn(coarse_logits, coarse_map[batch["labels"]])
+                loss = loss + coarse_weight * c
+                coarse_sum += c.item()
 
             if aux_logits:
                 a = aux_loss(aux_logits, batch, aux_loss_fn)
@@ -198,6 +212,8 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "
         "accuracy": accuracy_score(all_labels, all_preds),
         "weighted_f1": f1_score(all_labels, all_preds, average="weighted", zero_division=0),
     }
+    if use_coarse:
+        out["coarse_loss"] = coarse_sum / max(len(loader), 1)
     if aux_batches:
         # 보조 손실이 실제로 몇 배치에 걸렸는지도 함께 낸다. 라벨 결측이 많으면
         # 이 수가 전체 배치 수보다 훨씬 작게 나와 바로 눈에 띈다.
@@ -332,6 +348,20 @@ def main():
     # 보조 손실에는 클래스 가중치를 걸지 않는다: 가중치는 train 세트의 **주 라벨** 분포에서
     # 계산한 것이라 모달리티별 라벨 분포와 다르다(예: 소리 라벨은 혐오 28.3%로 분포가 또 다름).
     # 맞지 않는 가중치를 걸면 보조 과제가 왜곡된다. label_smoothing은 주 손실과 맞춘다.
+    # v11g 3클래스 머리(13.14절). coarse_loss_weight가 0(기본)이면 경로를 타지 않는다.
+    # 중립 가중치: 3클래스에서 중립 재현율이 15~20%로 가장 큰 구멍이라 중립을 놓칠 때 벌점을 더 준다.
+    # ponytail: 가중치 값(0.5·2.0)은 실측 근거 없는 첫 추정 — v11g 결과 보고 조정한다.
+    coarse_weight = float(train_cfg.get("coarse_loss_weight", 0.0))
+    coarse_loss_fn = None
+    if coarse_weight > 0:
+        if not model.use_coarse:
+            raise ValueError("train.coarse_loss_weight > 0인데 model.coarse_head가 꺼져 있다 — config에서 model.coarse_head: true")
+        cw = torch.ones(len(COARSE_LABELS), device=device)
+        cw[COARSE_LABELS.index("neutral")] = float(train_cfg.get("coarse_neutral_weight", 1.0))
+        coarse_loss_fn = torch.nn.CrossEntropyLoss(weight=cw, label_smoothing=label_smoothing)
+        print(f"[train] 3클래스 보조 손실 활성 — 가중치 {coarse_weight}, 클래스 가중치 {cw.tolist()} ({COARSE_LABELS})", flush=True)
+    elif model.use_coarse:
+        raise ValueError("model.coarse_head가 켜져 있는데 train.coarse_loss_weight가 0이다 — 머리가 학습되지 않는다")
     aux_weight = float(train_cfg.get("aux_loss_weight", 0.0))
     aux_loss_fn = None
     if aux_weight > 0:
@@ -384,6 +414,9 @@ def main():
         "noise_aug_snrs": noise_aug_snrs,
         "noise_aug_clean_ratio": train_cfg.get("noise_aug_clean_ratio"),
         "w2v_finetune_layers": cfg.audio_w2v_finetune_layers,
+        "coarse_head": model.use_coarse,
+        "coarse_loss_weight": coarse_weight,
+        "coarse_neutral_weight": train_cfg.get("coarse_neutral_weight") if coarse_weight > 0 else None,
         "w2v_lr": w2v_lr if cfg.audio_w2v_finetune_layers > 0 else None,
         **code_provenance(),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -403,7 +436,8 @@ def main():
         train_ds.set_epoch(epoch)
         train_metrics = run_epoch(model, train_loader, device, train_loss_fn, optimizer,
                                   log_label=f"epoch {epoch:03d} train",
-                                  aux_loss_fn=aux_loss_fn, aux_weight=aux_weight)
+                                  aux_loss_fn=aux_loss_fn, aux_weight=aux_weight,
+                                  coarse_loss_fn=coarse_loss_fn, coarse_weight=coarse_weight)
         val_metrics = run_epoch(model, val_loader, device, eval_loss_fn, optimizer=None, log_label=f"epoch {epoch:03d} val")
 
         # param_groups[1]이 기존 모든 버전과 동일한 "메인" lr(크로스어텐션/분류기/프론트엔드) —
@@ -428,6 +462,8 @@ def main():
             # 호환이 깨진다(정규식은 뒤 텍스트를 무시하지만 lr 앞에 끼면 매칭 실패).
             print(f"  -> 보조손실={train_metrics['aux_loss']:.4f} "
                   f"(적용 배치 {train_metrics['aux_batches']}/{len(train_loader)})", flush=True)
+        if "coarse_loss" in train_metrics:
+            print(f"  -> 3클래스 손실={train_metrics['coarse_loss']:.4f}", flush=True)
         if cur_lr < prev_lr:
             print(f"  -> val_loss 정체로 학습률 감소: {prev_lr:.2e} -> {cur_lr:.2e} (bert: {prev_bert_lr:.2e} -> {cur_bert_lr:.2e})", flush=True)
 

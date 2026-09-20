@@ -17,6 +17,7 @@ from .models.text_backbone import TextBackbone
 from .fusion.hierarchical_fusion import build_fusion, mean_pool
 from .fusion.gated_prosody import ProsodyConcatFusion, ProsodyGatedFusion
 from .fusion.classifier import HybridClassifier
+from .datasets.labels import COARSE_LABELS
 
 
 class TrimodalEmotionModel(nn.Module):
@@ -72,7 +73,9 @@ class TrimodalEmotionModel(nn.Module):
             self.prosody_gate = ProsodyGatedFusion(hybrid_dim=hybrid_dim, prosody_dim=m.prosody_dim)
         elif m.prosody_fusion == "concat":
             self.prosody_gate = ProsodyConcatFusion(hybrid_dim=hybrid_dim, prosody_dim=m.prosody_dim)
-        self.classifier = HybridClassifier(hybrid_dim=hybrid_dim, num_classes=m.num_classes, dropout=m.classifier_dropout)
+        self.classifier = HybridClassifier(hybrid_dim=hybrid_dim, num_classes=m.num_classes, dropout=m.classifier_dropout,
+                                           num_coarse=len(COARSE_LABELS) if m.coarse_head else 0)
+        self.use_coarse = bool(m.coarse_head)
 
         # v12 보조 헤드(11.2절). 각 브랜치가 "자기 입력에 답이 있는" 과제를 함께 풀게 한다.
         #
@@ -230,10 +233,15 @@ class TrimodalEmotionModel(nn.Module):
             if self.prosody_fusion != "none" else z_audio_hybrid
         )
 
-        logits = self.classifier(z_v_final, z_audio_final, z_t_final)
         if not return_aux:
-            return logits
+            return self.classifier(z_v_final, z_audio_final, z_t_final)
         aux = {}
+        if self.use_coarse:
+            # v11g: aux["coarse"]는 v12 보조 헤드와 달리 매니페스트 라벨이 아니라 7클래스 라벨에서
+            # 유도한다(labels.COARSE_IDX_OF_LABEL_IDX). train.py가 따로 손실을 건다.
+            logits, aux["coarse"] = self.classifier.forward_with_coarse(z_v_final, z_audio_final, z_t_final)
+        else:
+            logits = self.classifier(z_v_final, z_audio_final, z_t_final)
         if self.use_aux:
             aux = {
                 "aux_visual": self.aux_visual_head(v_pool),

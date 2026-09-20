@@ -21,6 +21,15 @@ EMOTION_LABELS = ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutr
 LABEL_TO_IDX = {label: idx for idx, label in enumerate(EMOTION_LABELS)}
 IDX_TO_LABEL = {idx: label for label, idx in LABEL_TO_IDX.items()}
 
+# 3클래스(긍정/부정/중립) 묶음 — 배포 엔진(robot/brain/engine.py COARSE)과 같은 묶음이다.
+# v11g(13.14절)부터 모델이 이 3클래스도 직접 배운다(보조 헤드). 순서는 COARSE_LABELS 인덱스.
+COARSE_LABELS = ["positive", "negative", "neutral"]
+COARSE_OF = {"happy": "positive", "surprise": "positive",
+             "angry": "negative", "disgust": "negative", "fear": "negative", "sad": "negative",
+             "neutral": "neutral"}
+# 7클래스 인덱스 -> 3클래스 인덱스 (torch 텐서로 바꿔 labels에 인덱싱하면 배치 단위 변환)
+COARSE_IDX_OF_LABEL_IDX = [COARSE_LABELS.index(COARSE_OF[e]) for e in EMOTION_LABELS]
+
 # AI Hub 원본 라벨 표기 -> 우리 표준 표기 (매니페스트 생성 시 사용)
 RAW_LABEL_ALIASES = {
     "dislike": "disgust",  # AI Hub 원본 표기

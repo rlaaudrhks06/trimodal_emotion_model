@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=None, help="생략 시 config.yaml의 epochs 그대로 사용")
     parser.add_argument("--seed", type=int, default=42,
                         help="재현성 — 베이스라인끼리(예: 멜 vs wav2vec2) 비교하려면 반드시 같은 seed여야 한다")
+    parser.add_argument("--checkpoint-dir", type=str, default=None, help="config의 train.checkpoint_dir를 덮어쓴다(시드별 폴더)")
     args = parser.parse_args()
     set_seed(args.seed)
 
@@ -46,8 +47,14 @@ def main():
     # wav2vec2 백본은 멜이 아니라 원본 파형을 받으므로 데이터셋에 파형도 요청한다.
     need_wav = args.modality == "audio" and cfg.audio_backbone == "wav2vec2"
     ds_kwargs = dict(cache_dir=cache_dir, prosody_stats_path=prosody_stats_path, return_waveform=need_wav)
-    train_ds = ManifestEmotionDataset(train_cfg["train_manifest"], cfg, **ds_kwargs)
+    # 소음 증강(13.5절)은 train에만 — scripts/train.py와 같은 인자. val은 깨끗한 채로 둔다.
+    noise_aug_snrs = train_cfg.get("noise_aug_snrs")
+    train_ds = ManifestEmotionDataset(train_cfg["train_manifest"], cfg, **ds_kwargs,
+                                      noise_aug_snrs=noise_aug_snrs, noisy_prosody_dir=train_cfg.get("noisy_prosody_dir"),
+                                      noise_aug_clean_ratio=train_cfg.get("noise_aug_clean_ratio"))
     val_ds = ManifestEmotionDataset(train_cfg["val_manifest"], cfg, **ds_kwargs)
+    if noise_aug_snrs:
+        print(f"[train_single_modality] 소음 증강 SNR {noise_aug_snrs} (train만)", flush=True)
     if need_wav:
         print(f"[train_single_modality:audio] wav2vec2 백본 사용 — {cfg.audio_pretrained} "
               f"layer={cfg.audio_w2v_layer} freeze={cfg.audio_w2v_freeze}", flush=True)
@@ -56,7 +63,7 @@ def main():
     loader_kwargs = dict(
         num_workers=num_workers,
         pin_memory=(device.type == "cuda"),
-        persistent_workers=num_workers > 0,
+        persistent_workers=num_workers > 0 and not noise_aug_snrs,  # 증강 시 set_epoch 전달을 위해 끈다(train.py와 동일)
     )
     train_loader = DataLoader(train_ds, batch_size=train_cfg["batch_size"], shuffle=True, collate_fn=collate_fn, **loader_kwargs)
     val_loader = DataLoader(val_ds, batch_size=train_cfg["batch_size"], shuffle=False, collate_fn=collate_fn, **loader_kwargs)
@@ -71,7 +78,16 @@ def main():
               "보조 학습은 트리모달 본 모델(scripts/train.py)에서만 동작한다.", flush=True)
 
     model = SingleModalityModel(cfg, modality=args.modality).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=train_cfg["lr"], weight_decay=train_cfg["weight_decay"])
+    # wav2vec2 부분 미세조정 층은 별도 낮은 lr(train.py와 같은 규칙). 없으면 그룹 하나뿐이라 이전과 동일.
+    w2v_lr = train_cfg.get("w2v_lr", 2e-5)
+    w2v_params = [p for n, p in model.named_parameters() if n.startswith("backbone.w2v.") and p.requires_grad]
+    other_params = [p for n, p in model.named_parameters() if not n.startswith("backbone.w2v.") and p.requires_grad]
+    if w2v_params:
+        print(f"[train_single_modality:audio] wav2vec2 부분 미세조정: {model.backbone.finetune_range[0]}~{model.backbone.finetune_range[1]}층 "
+              f"{sum(p.numel() for p in w2v_params):,}개 (lr={w2v_lr:.1e}) · 나머지 {sum(p.numel() for p in other_params):,}개", flush=True)
+    optimizer = torch.optim.AdamW(
+        [{"params": other_params, "lr": train_cfg["lr"]}] + ([{"params": w2v_params, "lr": w2v_lr}] if w2v_params else []),
+        weight_decay=train_cfg["weight_decay"])
 
     class_weights = compute_class_weights(train_ds, device)
     label_smoothing = train_cfg.get("label_smoothing", 0.0)
@@ -90,8 +106,15 @@ def main():
     # config의 checkpoint_dir를 우선 쓴다. 예전엔 이 경로를 하드코딩해서, 같은 모달리티의
     # 서로 다른 실험(오디오 멜 vs wav2vec2)이 같은 폴더에 저장되어 **나중 실행이 앞 실행의
     # 체크포인트를 조용히 덮어썼다.** config에 지정이 없을 때만 예전 규칙으로 폴백한다.
-    ckpt_dir = Path(train_cfg.get("checkpoint_dir") or f"checkpoints_baseline_{args.modality}")
+    ckpt_dir = Path(args.checkpoint_dir or train_cfg.get("checkpoint_dir") or f"checkpoints_baseline_{args.modality}")
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+    import json
+    from src.eval_report import code_provenance
+    (ckpt_dir / "run_info.json").write_text(json.dumps({
+        "modality": args.modality, "seed": args.seed, "config": args.config,
+        "train_manifest": train_cfg["train_manifest"], "epochs": args.epochs or train_cfg["epochs"],
+        "w2v_finetune_layers": cfg.audio_w2v_finetune_layers, "noise_aug_snrs": noise_aug_snrs,
+        **code_provenance()}, ensure_ascii=False, indent=2))
 
     epochs = args.epochs or train_cfg["epochs"]
     best_val_acc = 0.0

@@ -34,6 +34,8 @@ class SingleModalityModel(nn.Module):
                     pretrained_model=cfg.audio_pretrained, d_model=m.d_model, n_heads=m.n_heads,
                     ffn_dim=m.ffn_dim, n_layers=m.backbone_layers, layer=cfg.audio_w2v_layer,
                     dropout=m.backbone_dropout, freeze=cfg.audio_w2v_freeze,
+                    # v11d_audio263(13.15절): 오디오 단독 사전학습에서도 트리모달과 같은 층을 미세조정한다.
+                    finetune_layers=cfg.audio_w2v_finetune_layers,
                 )
             else:
                 self.backbone = AudioBackbone(

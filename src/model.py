@@ -107,6 +107,26 @@ class TrimodalEmotionModel(nn.Module):
             self.aux_audio_head = head(m.d_model)
             self.aux_text_head = head(m.d_model)
 
+    def load_audio_from_single_modality(self, path) -> dict:
+        """v11d_audio263(13.15절): 오디오 단독 모델(SingleModalityModel, modality=audio)의 체크포인트에서
+        오디오 갈래(`backbone.*` → `audio_backbone.*`)만 가져온다. 나머지(얼굴·글·융합·분류기)는 그대로.
+
+        조용한 부분 적재를 막는다 — audio_backbone의 **모든 파라미터**가 체크포인트에 있어야 하고,
+        모양이 다르면 죽는다. 돌려주는 dict는 run_info에 기록한다.
+        """
+        state = torch.load(path, map_location="cpu")
+        src = {k[len("backbone."):]: v for k, v in state.items() if k.startswith("backbone.")}
+        own = self.audio_backbone.state_dict()
+        missing = [k for k in own if k not in src]
+        if missing:
+            raise ValueError(f"오디오 단독 체크포인트에 없는 audio_backbone 키 {len(missing)}개: {missing[:5]}")
+        bad = [k for k in own if own[k].shape != src[k].shape]
+        if bad:
+            raise ValueError(f"모양이 다른 키 {len(bad)}개: {bad[:5]}")
+        self.audio_backbone.load_state_dict({k: src[k] for k in own}, strict=True)
+        n = sum(v.numel() for k, v in own.items())
+        return {"init_audio_from": str(path), "init_audio_keys": len(own), "init_audio_params": int(n)}
+
     def _maybe_drop_modalities(self, mel_spec, prosody_vec, frames, input_ids, attention_mask, waveform=None,
                                audio_feat=None, audio_feat_padding_mask=None):
         """설계 v3 §9 강건성: 학습 시 모달리티 드롭아웃.

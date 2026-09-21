@@ -229,6 +229,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=None,
                         help="config의 epochs를 덮어쓴다. run_info.json에 기록된다 — 정점이 일찍 오는 미세조정 run에서 "
                              "config를 복사하지 않고 길이만 줄이려는 것")
+    parser.add_argument("--init-audio-from", type=str, default=None,
+                        help="v11d_audio263: 오디오 단독 사전학습 체크포인트(best_model.pt)로 audio_backbone을 초기화한다 (config train.init_audio_from 덮어씀)")
     parser.add_argument("--checkpoint-dir", type=str, default=None,
                         help="config의 checkpoint_dir을 덮어쓴다. 같은 config를 시드만 바꿔 여러 번 돌릴 때 "
                              "best_model.pt가 서로 덮어쓰지 않게 하려는 것(periodic도 같은 이름+_periodic).")
@@ -295,6 +297,12 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=train_cfg["batch_size"], shuffle=False, collate_fn=collate_fn, **loader_kwargs)
 
     model = TrimodalEmotionModel(cfg, modality_dropout_prob=train_cfg["modality_dropout_prob"]).to(device)
+    # v11d_audio263(13.15절): 오디오 갈래를 263 단독 사전학습 가중치로 시작한다. 없으면 이전과 동일(사전학습 값).
+    init_audio_from = args.init_audio_from or train_cfg.get("init_audio_from")
+    init_audio_info = {}
+    if init_audio_from:
+        init_audio_info = model.load_audio_from_single_modality(init_audio_from)
+        print(f"[train] 오디오 갈래 초기화: {init_audio_from} ({init_audio_info['init_audio_keys']}키, {init_audio_info['init_audio_params']:,}개)", flush=True)
     if w2v_cache_dir:
         # 캐시 경로에서 모달리티 드롭아웃이 v11과 같은 입력("0 파형의 wav2vec2 출력")을 주도록
         # 프레임 길이별 표를 올린다. 없으면 드롭아웃 첫 발생에서 죽는다 — 조용히 0을 넣지 않는다.
@@ -415,6 +423,7 @@ def main():
         "noise_aug_clean_ratio": train_cfg.get("noise_aug_clean_ratio"),
         "w2v_finetune_layers": cfg.audio_w2v_finetune_layers,
         "coarse_head": model.use_coarse,
+        **init_audio_info,
         "coarse_loss_weight": coarse_weight,
         "coarse_neutral_weight": train_cfg.get("coarse_neutral_weight") if coarse_weight > 0 else None,
         "w2v_lr": w2v_lr if cfg.audio_w2v_finetune_layers > 0 else None,

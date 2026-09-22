@@ -1,0 +1,142 @@
+{
+  "name": "v11g_s44_noise10",
+  "evaluated_at": "2026-09-22T10:49:53+09:00",
+  "manifest": "data/manifests_si/test.csv",
+  "models": [
+    {
+      "config": "configs/config_noise_aug_plus263_ft4_coarse.yaml",
+      "checkpoint": "checkpoints_v11g_s44/best_model.pt"
+    }
+  ],
+  "git_commit": "17a7a9a",
+  "git_branch": "coarse-head",
+  "git_dirty": false,
+  "python": "3.12.3",
+  "torch": "2.14.0+cu130",
+  "accuracy": 0.454728,
+  "weighted_f1": 0.448724,
+  "macro_f1": 0.408818,
+  "n_samples": 11464,
+  "labels": [
+    "angry",
+    "disgust",
+    "fear",
+    "happy",
+    "sad",
+    "surprise",
+    "neutral"
+  ],
+  "confusion_matrix": [
+    [
+      409,
+      354,
+      27,
+      34,
+      16,
+      86,
+      37
+    ],
+    [
+      335,
+      1355,
+      209,
+      293,
+      265,
+      411,
+      227
+    ],
+    [
+      21,
+      168,
+      151,
+      58,
+      88,
+      120,
+      73
+    ],
+    [
+      33,
+      273,
+      24,
+      1610,
+      96,
+      211,
+      218
+    ],
+    [
+      28,
+      316,
+      151,
+      117,
+      356,
+      93,
+      118
+    ],
+    [
+      55,
+      188,
+      72,
+      189,
+      43,
+      953,
+      100
+    ],
+    [
+      21,
+      262,
+      90,
+      376,
+      114,
+      241,
+      379
+    ]
+  ],
+  "per_class": {
+    "angry": {
+      "precision": 0.4534368070953437,
+      "recall": 0.42471443406022846,
+      "f1-score": 0.4386058981233244,
+      "support": 963.0
+    },
+    "disgust": {
+      "precision": 0.46467764060356653,
+      "recall": 0.4378029079159935,
+      "f1-score": 0.4508401264348694,
+      "support": 3095.0
+    },
+    "fear": {
+      "precision": 0.2085635359116022,
+      "recall": 0.22238586156111928,
+      "f1-score": 0.21525302922309336,
+      "support": 679.0
+    },
+    "happy": {
+      "precision": 0.6014194994396713,
+      "recall": 0.6531440162271805,
+      "f1-score": 0.6262154803578374,
+      "support": 2465.0
+    },
+    "sad": {
+      "precision": 0.36400817995910023,
+      "recall": 0.30195080576759964,
+      "f1-score": 0.3300880853036625,
+      "support": 1179.0
+    },
+    "surprise": {
+      "precision": 0.45059101654846334,
+      "recall": 0.595625,
+      "f1-score": 0.5130551816958278,
+      "support": 1600.0
+    },
+    "neutral": {
+      "precision": 0.3289930555555556,
+      "recall": 0.25556304787592715,
+      "f1-score": 0.2876660341555977,
+      "support": 1483.0
+    }
+  },
+  "coarse_acc_from_7class_sum": 0.6821353803210048,
+  "coarse_acc_head": 0.66006629448709,
+  "noise_snr_db": 10.0,
+  "noise_scope": "all"
+}

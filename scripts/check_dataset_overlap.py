@@ -9,8 +9,10 @@
                   증상이 없는 버그라 "넣기 전 검사"가 유일한 방어다)
 
 검사 방법:
-  텍스트  — 공백·문장부호 제거 후 정확 일치 (가장 싸고 대부분 잡힌다)
-  길이    — wav 길이가 ±0.05초 안이면 후보로 올리고 파형 상관계수로 확정
+  텍스트  — 공백·문장부호 제거 후 일치. 단 **발화 하나가 같은 것은 증거가 못 된다** —
+            드라마 대본이라 우리 train과 test 사이에도 2,783건이 일치한다("아 왜?", 심지어
+            "그런 말은 또 어디서 배웠대?"까지). 그래서 **클립 단위로 집계**해서, 새 클립 하나가
+            우리 클립 하나와 min_pair_hits건 이상 일치할 때만 중복 클립으로 본다.
   얼굴    — MobileFaceNet(학습에 쓰는 것과 같은 백본) 임베딩의 코사인 유사도.
             프로빙에서 이 임베딩이 감정보다 화자 정보를 3배 더 담고 있었다(8.x절) —
             화자 대조에는 오히려 유리하다.
@@ -37,6 +39,12 @@ PUNCT = re.compile(r"[\s\W_]+", re.UNICODE)
 def norm_text(s: str) -> str:
     """공백·문장부호 제거 + 유니코드 정규화. 전사 표기 차이를 흡수한다."""
     return PUNCT.sub("", unicodedata.normalize("NFKC", str(s))).lower()
+
+
+def clip_of(utt_id: str) -> str:
+    """utt_id '{clip}_{person}_{start}_{end}' -> clip_id. 형식이 다르면 utt_id 전체."""
+    parts = str(utt_id).split("_")
+    return parts[0] if len(parts) >= 4 else str(utt_id)
 
 
 def speaker_of(utt_id: str) -> str:
@@ -71,12 +79,16 @@ def face_embeddings(df: pd.DataFrame, root: Path, per_utt: int = 2, batch: int =
     missing = 0
     for utt, fdir in zip(df["utt_id"].astype(str), df["face_frames_dir"].astype(str)):
         d = root / fdir
-        imgs = sorted(d.glob("*.jpg")) if d.is_dir() else []
+        # macOS가 남긴 AppleDouble(._*)은 JPEG이 아니라 열면 죽는다(서버로 rsync하며 섞였다).
+        imgs = sorted(q for q in d.glob("*.jpg") if not q.name.startswith("._")) if d.is_dir() else []
         if not imgs:
             missing += 1
             continue
         for p in imgs[:: max(1, len(imgs) // per_utt)][:per_utt]:
-            a = np.asarray(Image.open(p).convert("RGB").resize((112, 112)), dtype=np.float32) / 255.0
+            try:
+                a = np.asarray(Image.open(p).convert("RGB").resize((112, 112)), dtype=np.float32) / 255.0
+            except Exception:
+                continue  # 깨진 파일 하나 때문에 검사 전체가 멈추면 안 된다
             buf.append(((a - 0.5) / 0.5).transpose(2, 0, 1))
             keys.append(speaker_of(utt))
             if len(buf) >= batch:
@@ -93,6 +105,10 @@ def main() -> int:
     ap.add_argument("--new", required=True, help="새 데이터 매니페스트")
     ap.add_argument("--out", required=True)
     ap.add_argument("--root", default=".", help="face_frames_dir·wav_path의 기준 경로")
+    ap.add_argument("--min-text-len", type=int, default=4,
+                    help="정규화 후 이 길이 미만인 대사는 일치 증거로 안 센다(\"응\",\"왜?\" 같은 것)")
+    ap.add_argument("--min-pair-hits", type=int, default=3,
+                    help="새 클립 1개 ↔ 우리 클립 1개 사이 일치 발화가 이 수 이상이면 중복 클립")
     ap.add_argument("--face-threshold", type=float, default=0.62,
                     help="코사인 유사도가 이 값 이상이면 같은 화자로 본다(보수적으로 낮게)")
     ap.add_argument("--skip-face", action="store_true", help="얼굴 검사 생략(텍스트·길이만)")
@@ -103,11 +119,23 @@ def main() -> int:
     new = pd.read_csv(args.new)
     print(f"[overlap] 우리 {len(ours):,}발화 / 새 데이터 {len(new):,}발화", flush=True)
 
-    # ① 텍스트 중복
-    ours_text = set(ours["text"].map(norm_text)) - {""}
-    new_norm = new["text"].map(norm_text)
-    dup_text = new.loc[new_norm.isin(ours_text) & (new_norm != ""), "utt_id"].astype(str).tolist()
-    print(f"[overlap] ① 텍스트 일치: {len(dup_text):,}건", flush=True)
+    # ① 클립 중복 (텍스트 일치를 클립 쌍으로 집계)
+    ours_by_text = defaultdict(set)
+    for u, t in zip(ours["utt_id"].astype(str), ours["text"].map(norm_text)):
+        if len(t) >= args.min_text_len:
+            ours_by_text[t].add(clip_of(u))
+    pair = defaultdict(int)
+    n_hit_utt = 0
+    for u, t in zip(new["utt_id"].astype(str), new["text"].map(norm_text)):
+        if len(t) < args.min_text_len or t not in ours_by_text:
+            continue
+        n_hit_utt += 1
+        for oc in ours_by_text[t]:
+            pair[(clip_of(u), oc)] += 1
+    dup_clips = {nc for (nc, _), n in pair.items() if n >= args.min_pair_hits}
+    dup_text = new.loc[new["utt_id"].astype(str).map(clip_of).isin(dup_clips), "utt_id"].astype(str).tolist()
+    print(f"[overlap] ① 발화 일치 {n_hit_utt:,}건 -> 중복 클립 {len(dup_clips):,}개 "
+          f"/ 발화 {len(dup_text):,}건 (길이>={args.min_text_len}, 쌍당 {args.min_pair_hits}건 이상)", flush=True)
 
     # ② 화자 누수 (얼굴)
     leak_utts, leak_pairs = [], []
@@ -136,7 +164,8 @@ def main() -> int:
     out = {
         "ours": args.ours, "new": args.new, "n_ours": len(ours), "n_new": len(new),
         "face_threshold": args.face_threshold,
-        "dup_text": len(dup_text), "leak_speaker_utts": len(leak_utts),
+        "min_text_len": args.min_text_len, "min_pair_hits": args.min_pair_hits,
+        "dup_clips": len(dup_clips), "dup_clip_utts": len(dup_text), "leak_speaker_utts": len(leak_utts),
         "exclude_utts": exclude, "n_exclude": len(exclude), "n_keep": len(new) - len(exclude),
         "leak_pairs": sorted(leak_pairs, key=lambda d: -d["cosine"])[:50],
     }

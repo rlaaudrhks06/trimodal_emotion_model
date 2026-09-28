@@ -247,9 +247,9 @@ def main() -> int:
     if rows:
         import pandas as pd
         d = pd.DataFrame(rows)
-        print("[prep57] 라벨 분포:", d.label.value_counts().to_dict(), flush=True)
-        print(f"[prep57] 화자 {d.speaker_name.nunique()}명 · 클립 {d.clip.nunique()}개 "
-              f"· 프레임 중앙값 {int(d.n_frames.median())}", flush=True)
+        print("[prep57] 라벨 분포:", d["label"].value_counts().to_dict(), flush=True)
+        print(f"[prep57] 화자 {d["speaker_name"].nunique()}명 · 클립 {d["clip"].nunique()}개 "
+              f"· 프레임 중앙값 {int(d["n_frames"].median())}", flush=True)
     return 0
 
 

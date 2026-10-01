@@ -30,6 +30,9 @@ class ModelConfig:
     aux_head_dim: int = 0
     # v11g(13.14절): 3클래스(긍정/부정/중립) 머리를 7클래스 머리 옆에 단다. False(기본)면 v11e와 동일.
     coarse_head: bool = False
+    # 영상 백본(13.18절). "mobilefacenet"(기본, 동결 사전학습) · "scratch"(처음부터 학습하는 소형 CNN).
+    # scratch는 8.8절에서 person bbox를 얼굴이라 부르던 시절의 비교를 고친 입력으로 다시 재려고 되살린 것.
+    visual_backbone: str = "mobilefacenet"
     # 계층적 융합에서 **1단계에 들어가는 두 모달리티**(11.3.2 항목 1).
     # "audio_text"(기본)가 v1~v12b 전체가 쓴 순서라 값을 안 주면 동작이 완전히 같다.
     # 고를 수 있는 값과 실험 의도는 src/fusion/hierarchical_fusion.py 참고.

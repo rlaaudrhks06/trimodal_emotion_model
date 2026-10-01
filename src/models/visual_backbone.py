@@ -33,6 +33,32 @@ MBF_STD = (0.5, 0.5, 0.5)
 MBF_NATIVE_DIM = 512  # mbf_va_mtl 백본이 내는 임베딩 차원
 
 
+class ScratchFrameCNN(nn.Module):
+    """사전학습 없이 처음부터 학습하는 소형 CNN (커밋 0020654 판본 그대로 복원).
+
+    왜 되살리는가(13.18절): 이 CNN이 24.03%로 실패했던 것은 **입력이 얼굴이 아니라 사람
+    전신**이었을 때의 기록이다(8.8절). 크롭을 고친 뒤 다시 돌린 적이 없으므로
+    "MobileFaceNet이 더 낫다"는 비교는 오염된 입력에서의 비교였다. 같은 조건에서 다시 잰다.
+    """
+
+    def __init__(self, feat_dim: int = 256, dropout: float = 0.0):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(3, 32, 3, stride=2, padding=1), nn.BatchNorm2d(32), nn.ReLU(),            # 112->56
+            nn.Dropout2d(dropout),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.BatchNorm2d(64), nn.ReLU(),           # 56->28
+            nn.Dropout2d(dropout),
+            nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.BatchNorm2d(128), nn.ReLU(),         # 28->14
+            nn.Dropout2d(dropout),
+            nn.Conv2d(128, feat_dim, 3, stride=2, padding=1), nn.BatchNorm2d(feat_dim), nn.ReLU(),  # 14->7
+        )
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.feat_dim = feat_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.pool(self.conv(x)).flatten(1)
+
+
 class FrameCNN(nn.Module):
     """단일 프레임 [3,H,W] -> 임베딩 [feat_dim]. 얼굴인식 사전학습 MobileFaceNet 기반.
 
@@ -86,9 +112,15 @@ class VisualBackbone(nn.Module):
     def __init__(
         self, d_model: int, n_heads: int, ffn_dim: int, n_layers: int, frame_feat_dim: int = 256,
         dropout: float = 0.1, cnn_dropout: float = 0.0, cnn_freeze_layers: int = 9,
+        backbone_type: str = "mobilefacenet",
     ):
         super().__init__()
-        self.frame_cnn = FrameCNN(feat_dim=frame_feat_dim, dropout=cnn_dropout, freeze_layers=cnn_freeze_layers)
+        if backbone_type not in ("mobilefacenet", "scratch"):
+            raise ValueError(f"model.visual_backbone는 'mobilefacenet'·'scratch' 중 하나여야 한다, got {backbone_type!r}")
+        self.backbone_type = backbone_type
+        self.frame_cnn = (ScratchFrameCNN(feat_dim=frame_feat_dim, dropout=cnn_dropout)
+                          if backbone_type == "scratch"
+                          else FrameCNN(feat_dim=frame_feat_dim, dropout=cnn_dropout, freeze_layers=cnn_freeze_layers))
         self.frontend = TemporalConvFrontend(
             in_dim=frame_feat_dim, d_model=d_model, n_heads=n_heads, ffn_dim=ffn_dim, n_layers=n_layers, dropout=dropout
         )

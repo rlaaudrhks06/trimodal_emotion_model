@@ -50,6 +50,9 @@ from src.datasets.labels import normalize_label  # noqa: E402
 
 EMO_MAP = {"NEUTRAL": "neutral", "SAD": "sad", "ANGRY": "angry", "JOY": "happy",
            "SURPRISE": "surprise", "FEAR": "fear", "UNPLEASURE": "disgust"}
+# 원본 오타: F0004·M0004의 script.txt는 라벨에서 글자를 하나씩 빠뜨렸다(두 화자 전부, 일관되게).
+# 고치지 않으면 neutral 9,594 + disgust 162를 통째로 버린다.
+ALIAS = {"NEUTRA": "NEUTRAL", "UNPEASURE": "UNPLEASURE", "SY": "SHY", "URRY": "HURRY", "ESITATE": "HESITATE"}
 HEAD = re.compile(r"^([FM]\d+_\d+)\s+([A-Z]+)\s*(#\S+)?\s*$")
 TAG = re.compile(r"\|+[A-Z]*")   # 끊어읽기 태그: "||HL", "|||M", "||||LHL"
 SR = 16000
@@ -96,6 +99,7 @@ def one_speaker(tar_path: str, member: str, out_dir: str, drop_narration: bool) 
                     stat["대본에없음"] += 1
                     continue
                 emo, sub, txt = meta
+                emo = ALIAS.get(emo, emo)
                 if drop_narration and sub == "#지문":
                     stat["지문제외"] += 1
                     continue
@@ -131,10 +135,14 @@ def main() -> int:
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--drop-narration", action="store_true", help="#지문(나레이션 낭독) 제외")
+    ap.add_argument("--speakers", default="", help="쉼표로 구분한 화자만 처리(예: F0004,M0004). 비우면 전부")
     args = ap.parse_args()
 
     with tarfile.open(args.large) as t:
         members = [n for n in t.getnames() if n.endswith(".tar")]
+    if args.speakers:
+        want = set(args.speakers.split(","))
+        members = [m for m in members if Path(m).stem in want]
     print(f"[prep637] 화자 tar {len(members)}개: {[Path(m).stem for m in members]}", flush=True)
 
     rows, stat = [], collections.defaultdict(int)

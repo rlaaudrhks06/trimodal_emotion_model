@@ -4,13 +4,14 @@
   ② 끊어읽기 태그(||HL, |||M, ||||LHL)가 전사문에서 지워진다
   ③ 우리 7클래스로 매핑되는 감정만 통과하고, 나머지(KIND 등)는 EMO_MAP에 없다
   ④ 매핑 결과가 labels.normalize_label을 통과하는 유효한 라벨이다
+  ⑤ 원본 오타(F0004·M0004가 NEUTRAL을 NEUTRA로 적는 등)를 ALIAS가 되살린다
 
     python tests/test_prep637.py
 """
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.prepare_aihub637 import parse_script, EMO_MAP
+from scripts.prepare_aihub637 import parse_script, EMO_MAP, ALIAS
 from src.datasets.labels import EMOTION_LABELS, normalize_label
 
 SAMPLE = """F0001_000001 NEUTRAL #지문
@@ -44,6 +45,11 @@ def main() -> int:
     for v in EMO_MAP.values():
         assert normalize_label(v) in EMOTION_LABELS, v
     print("  ✅ 매핑 결과가 전부 유효한 7클래스 라벨")
+    for typo, real in ALIAS.items():
+        assert typo not in EMO_MAP, f"오타 {typo}가 EMO_MAP에 직접 들어 있다"
+        assert real in EMO_MAP or real in ("SHY", "HURRY", "HESITATE"), real
+    assert EMO_MAP[ALIAS["NEUTRA"]] == "neutral" and EMO_MAP[ALIAS["UNPEASURE"]] == "disgust"
+    print(f"  ✅ 원본 오타 복원: {ALIAS}")
     print("전부 통과")
     return 0
 

@@ -45,7 +45,8 @@ def main():
     md = "--md" in sys.argv
     rows = []
     for name, rs in RUNS:
-        label = name + ("  (s42/43/44)" if len(rs) > 1 else "  (s42)")
+        seeds = "/".join(r.split("_s")[-1] for r in rs) if len(rs) > 1 else "s42"
+        label = f"{name}  (s{seeds})" if len(rs) > 1 else f"{name}  ({seeds})"
         rows.append([label] + [" / ".join("—" if (v := acc(r + suf)) is None else f"{v:.2f}" for r in rs) for _, suf in COND])
     t1 = box([""] + [c for c, _ in COND], rows)
     rows2 = []

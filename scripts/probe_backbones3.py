@@ -45,6 +45,8 @@ CANDS = {
     "text": {
         "kluebert": "klue/bert-base (현재 쓰는 것)",
         "kluebert_emotion": "dlckdfuf141/korean-emotion-kluebert-v2 (한국어 감정 미세조정)",
+        "roberta_emotion": "Seonghaa/korean-emotion-classifier-roberta",
+        "kcelectra_emotion": "GGARA02/kcelectra-korean-emotion",
     },
     "face": {
         "mobilefacenet": "emotiefflib mbf_va_mtl (현재 쓰는 것)",
@@ -55,6 +57,8 @@ CANDS = {
 HF = {
     "kluebert": "klue/bert-base",
     "kluebert_emotion": "dlckdfuf141/korean-emotion-kluebert-v2",
+    "roberta_emotion": "Seonghaa/korean-emotion-classifier-roberta",
+    "kcelectra_emotion": "GGARA02/kcelectra-korean-emotion",
     "vit_fer": "trpakov/vit-face-expression",
     "beit_fer": "Tanneru/Facial-Emotion-Detection-FER-RAFDB-AffectNet-BEIT-Large",
 }
@@ -108,10 +112,20 @@ def feats_audio(name, df, dev, bs=16, max_sec=8.0):
 
 
 def feats_text(name, df, dev, bs=64):
-    from transformers import AutoModel, AutoTokenizer
+    from transformers import AutoConfig, AutoModel, AutoTokenizer
     hf = HF[name]
     tok = AutoTokenizer.from_pretrained(hf)
-    m = AutoModel.from_pretrained(hf).to(dev).eval()
+    # 미세조정 모델의 config.json에 적힌 라벨 이름표(id2label)가 transformers 5.x 검증을
+    # 통과 못 하는 경우가 있다(dlckdfuf141/korean-emotion-kluebert-v2). 우리는 분류기 머리를
+    # 버리고 백본만 쓰므로 그 필드를 비우고 불러온다 — 가중치·구조와는 무관한 형식 문제다.
+    cfg = AutoConfig.from_pretrained(hf)
+    for f in ("id2label", "label2id"):
+        try:
+            object.__setattr__(cfg, f, None)
+        except Exception:
+            try: setattr(cfg, f, None)
+            except Exception: pass
+    m = AutoModel.from_pretrained(hf, config=cfg).to(dev).eval()
     out = []
     texts = df["text"].astype(str).tolist()
     for i in range(0, len(texts), bs):

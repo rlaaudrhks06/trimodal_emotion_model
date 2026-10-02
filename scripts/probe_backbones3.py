@@ -164,6 +164,14 @@ def feats_face(name, df, dev, bs=64, per_utt=8):
         _s.path.insert(0, POSTER_DIR)
         from models.PosterV2_7cls import pyramid_trans_expr2
         m = pyramid_trans_expr2(img_size=224, num_classes=7)
+        # 체크포인트에 저자의 학습 기록 객체(RecorderMeter)가 같이 피클돼 있어 그대로는 못 읽는다.
+        # 우리는 state_dict만 쓰므로 그 이름들을 더미 클래스로 채워 언피클만 통과시킨다.
+        import __main__ as _m
+        class _Dummy:
+            def __setstate__(self, state): self.__dict__.update(state or {})
+        for _n in ("RecorderMeter", "RecorderMeter1"):
+            if not hasattr(_m, _n):
+                setattr(_m, _n, type(_n, (_Dummy,), {}))
         ck = torch.load(POSTER_CKPT, map_location="cpu", weights_only=False)
         sd = ck.get("state_dict", ck)
         sd = {k[7:] if k.startswith("module.") else k: v for k, v in sd.items()}

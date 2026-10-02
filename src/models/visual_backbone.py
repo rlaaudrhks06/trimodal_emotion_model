@@ -35,6 +35,11 @@ MBF_STD = (0.5, 0.5, 0.5)
 MBF_NATIVE_DIM = 512  # mbf_va_mtl 백본이 내는 임베딩 차원
 
 
+# EfficientFace가 AffectNet으로 사전학습될 때 쓴 정규화 상수(원저장소 main.py:96~97).
+EF_MEAN = (0.57535914, 0.44928582, 0.40079932)
+EF_STD = (0.20735591, 0.18981615, 0.18132027)
+
+
 class _DynamicLocalFeatureExtractor(_EFLocal):
     """원본 LocalFeatureExtractor의 사분면 분할을 입력 크기에 맞춰 일반화한 것.
 
@@ -107,6 +112,12 @@ class EfficientFaceFrameCNN(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.proj = nn.Linear(chans[-1], feat_dim)
         self.feat_dim = feat_dim
+        # AffectNet 사전학습 때 쓴 정규화(zengqunzhao/EfficientFace main.py:96). 동결 백본이라
+        # 이걸 빼면 가중치가 본 적 없는 분포가 들어간다 — 프로브에서 val 19.71%로
+        # 최다 클래스(27.0%)보다도 낮게 나왔다. katerynaCh 저장소는 0~1을 그대로 넣지만
+        # 그쪽은 백본을 통째로 파인튜닝하므로 초기 분포 불일치가 학습으로 흡수된다.
+        self.register_buffer("mean", torch.tensor(EF_MEAN).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor(EF_STD).view(1, 3, 1, 1))
 
     def train(self, mode: bool = True):
         super().train(mode)
@@ -121,6 +132,7 @@ class EfficientFaceFrameCNN(nn.Module):
         if x.shape[-1] != self.input_size:
             x = F.interpolate(x, size=(self.input_size, self.input_size),
                               mode="bilinear", align_corners=False)
+        x = (x - self.mean) / self.std       # 원본 순서와 같다(Resize -> ToTensor -> Normalize)
         x = self.conv1(x)
         x = self.maxpool(x)
         x1 = self.modulator(self.stage2(x))

@@ -52,6 +52,9 @@ body{background:#fff;font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans 
 .cls{border-color:#3f4650}.cls .bt{color:#242930}
 .pro{border-color:#0f8b7e;background:#f2fbf9;border-style:dashed}.pro .bt{color:#0b6b60}
 .out{border-color:#3f4650;background:#f6f7f8}
+.chg{border-color:#1d4ed8;background:#f5f8ff;border-width:2.4px}.chg .bt{color:#1740ad}
+.tag{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.03em;
+  background:#1d4ed8;color:#fff;border-radius:4px;padding:1px 5px;margin-left:5px;vertical-align:2px}
 
 .arrow{text-align:center;color:#c3c8ce;font-size:15px;line-height:1;margin:7px 0}
 .frozen{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.03em;
@@ -452,10 +455,102 @@ V10 = f"""
 </div>
 """
 
+# ------------------------------------------------ v20 구조 (현재 작업 중인 설계)
+V20 = f"""
+<div class="sheet">
+  <div class="title">v20 구조 — v11e에서 바뀐 두 곳</div>
+  <div class="sub">얼굴 백본을 EfficientFace로 교체하고, 모달리티 결손을 배치 복제로 학습한다</div>
+  <div class="meta">비교 기준 <b>v11e</b> 5시드 test <b>46.18 ± 0.70%</b> ·
+    바뀐 설정은 <b>네 줄</b>(visual_backbone · efficientface_input_size · softhard_dropout · batch_size) ·
+    출처 <b>katerynaCh/multimodal-emotion-recognition</b>(ICPR 2022, MIT)</div>
+
+  {stage(1, "입력 — 같은 발화 구간에서 동시 수집",
+    "데이터·분할·운율 통계는 v11e와 완전히 동일하다(train_si_plus263, 화자 독립)",
+    '<div class="row">'
+    '<div class="box aud"><div class="bt">음성 파형</div><div class="bs">16kHz mono · 소음증강 {깨끗,20,10,5}dB</div></div>'
+    '<div class="box vis"><div class="bt">얼굴 프레임</div>'
+    '<div class="bs">mediapipe 재검출+정렬 · 최대 32장</div><div class="dim">112 × 112</div></div>'
+    '<div class="box txt"><div class="bt">전사문</div><div class="bs">AI Hub 대본</div></div>'
+    '<div class="box pro"><div class="bt">운율 10차원</div>'
+    '<div class="bs">f0 · jitter · shimmer · HNR · energy</div></div>'
+    '</div>')}
+  {ARROW}
+  {stage(2, "softhard 모달리티 드롭아웃 — 바뀐 곳 ②", 
+    "기존 25% 확률 드롭은 한 배치가 어떤 결손을 보는지 운에 달려 있었다. 배치를 4벌로 복제해 매 배치가 네 상황을 전부 본다",
+    '<div class="row">'
+    '<div class="box chg"><div class="bt">원본 32건</div><div class="bs">세 모달 모두 정상</div></div>'
+    '<div class="box chg"><div class="bt">오디오 없음</div>'
+    '<div class="bs">파형·멜·운율 전부 0</div><div class="dim">마이크 고장</div></div>'
+    '<div class="box chg"><div class="bt">영상 없음</div>'
+    '<div class="bs">프레임 전부 0</div><div class="dim">얼굴 미검출</div></div>'
+    '<div class="box chg"><div class="bt">텍스트 없음</div>'
+    '<div class="bs">attention_mask 0 (첫 토큰만)</div><div class="dim">STT 실패</div></div>'
+    '</div>'
+    '<div class="note">한 스텝에 모델이 보는 샘플은 32×4 = <b>128</b>로 v11e와 같다(메모리도 동일). '
+    '대신 에폭당 스텝이 4배여서 <b>에폭 시간도 약 4배</b>다. 모델 내부 확률 드롭아웃은 '
+    '자동으로 0이 된다 — 둘을 같이 켜면 결손이 중복된다. 원 논문의 soft 계수(입력에 0~1을 곱함)는 '
+    '우리 파형에선 무효다(wav2vec2가 발화별로 정규화한다).</div>')}
+  {ARROW}
+  {stage(3, "사전학습 백본 3종 — 얼굴만 교체(바뀐 곳 ①), 전부 동결",
+    "AffectNet-7(표정 7종)으로 학습된 가중치라 감정 특징을 직접 담고 있다. MobileFaceNet은 얼굴 인식용이라 감정은 부수적이었다",
+    '<div class="row">'
+    '<div class="box aud"><div class="bt">wav2vec2 XLSR-53 <span class="frozen">9~12층만 학습</span></div>'
+    '<div class="bs">12번째 층 hidden state · lr 2e-5</div><div class="dim">1024차원 · v11e와 동일</div></div>'
+    '<div class="box chg"><div class="bt">EfficientFace<span class="tag">교체</span></div>'
+    '<div class="bs">AffectNet-7 사전학습 · 입력 224로 업샘플</div>'
+    '<div class="dim">1024차원 · 백본 1,268,118개</div></div>'
+    '<div class="box txt"><div class="bt">KLUE-BERT-base <span class="frozen">동결</span></div>'
+    '<div class="bs">last_hidden_state</div><div class="dim">768차원 · v11e와 동일</div></div>'
+    '</div>'
+    '<div class="note"><b>입력 해상도가 함정이었다</b>: 원 저장소는 224로 학습하고, '
+    'LocalFeatureExtractor가 56×56 특징맵을 전제로 좌표를 박아놨다(<code>x[:, :, 28:56, …]</code>). '
+    '우리 112 크롭을 그대로 넣으면 특징맵이 28×28이라 그 패치가 빈 텐서가 되어 <b>conv가 죽는다</b>. '
+    '그래서 112를 224로 업샘플해 사전학습 해상도를 맞춘다(112 그대로 쓰는 경로도 남겨뒀다). '
+    '백본 파라미터는 MobileFaceNet 2,059,520 → EfficientFace <b>1,268,118</b>개로 줄었다.</div>')}
+  {ARROW}
+  {stage(4, "2단계 계층적 교차 어텐션 — v11e와 동일",
+    "먼저 오디오↔텍스트를 맞추고, 그 결과에 영상을 붙인다. 표정이 먼저 변하고 목소리가 뒤따르는 시차를 잡는 구조다",
+    '<div class="row">'
+    '<div class="box fus"><div class="bt">1단계 오디오 ↔ 텍스트</div>'
+    '<div class="bs">양방향 교차 어텐션</div></div>'
+    '<div class="box fus"><div class="bt">2단계 영상 ↔ (오디오+텍스트)</div>'
+    '<div class="bs">양방향 · 4블록 · d_model 256 · 헤드 8</div></div>'
+    '<div class="box pro"><div class="bt">운율 게이트</div>'
+    '<div class="bs">10차원이 오디오 비중을 조절</div></div>'
+    '</div>')}
+  {ARROW}
+  {stage(5, "분류 — v11e와 동일",
+    "7클래스로 학습하고, 3클래스가 필요하면 확률을 더해서 argmax한다(먼저 argmax하고 매핑하는 것보다 1.2~2.2%p 높다)",
+    '<div class="row">'
+    '<div class="box cls"><div class="bt">768 → 512 → 7</div>'
+    '<div class="bs">dropout 0.35 · label smoothing 0.1</div></div>'
+    '<div class="box out"><div class="bt">7클래스</div>'
+    '<div class="bs">중립·기쁨·슬픔·분노·놀람·공포·혐오</div></div>'
+    '<div class="box out"><div class="bt">3클래스</div>'
+    '<div class="bs">확률 합산 후 argmax</div></div>'
+    '</div>')}
+
+  <div class="psum" style="margin-top:18px">
+    <div class="ph"><span>v11e와 다른 전부</span><span>그 외는 한 줄도 바꾸지 않았다</span></div>
+    <table>
+      <tr><td class="n">model.visual_backbone</td><td class="v">mobilefacenet → efficientface</td></tr>
+      <tr><td class="n">model.efficientface_input_size</td><td class="v">— → 224</td></tr>
+      <tr><td class="n">train.softhard_dropout</td><td class="v">— → true</td></tr>
+      <tr><td class="n">train.batch_size</td><td class="v">128 → 32 (4벌 복제 후 실효 128)</td></tr>
+      <tr><td class="n">epochs · lr · 데이터 · 분할 · 소음증강</td><td class="v">v11e와 동일(15 · 2e-4 · train_si_plus263)</td></tr>
+    </table>
+  </div>
+  <div class="legend">
+    <span style="color:#1740ad">■ 바뀐 곳</span><span style="color:#0b6b60">■ 음성·운율</span><span style="color:#9c1449">■ 영상</span><span style="color:#5620ac">■ 텍스트</span><span style="color:#a85c05">■ 융합</span>
+  </div>
+</div>
+"""
+
 DIAGRAMS = {"v2": ("architecture_v2_bimodal.png", V2),
             "v10": ("architecture_v10.png", V10),
             "v11": ("architecture_v11.png", V11),
-            "v11flow": ("architecture_v11_flow.png", V11_FLOW)}
+            "v11flow": ("architecture_v11_flow.png", V11_FLOW),
+            "v20": ("architecture_v20.png", V20)}
 
 
 def render(html: str, out: Path, width: int = 1180) -> None:

@@ -83,7 +83,7 @@ id_ed25519*
 #        clone 후 worktree를 만들면 그대로 재발한다. 그래서 여기에 적는다.
 # ─────────────────────────────────────────────────────────────────────────
 .venv
-models
+/models   # 루트의 safetensors 변환본만. 슬래시 없이 두면 src/models/ 아래까지 먹는다
 checkpoints
 checkpoints_periodic
 archived_runs
@@ -114,7 +114,10 @@ results/embeddings/
 # 위 두 디렉터리가 "그 체크포인트로 무엇을 얻었는지"의 기록 역할을 한다.
 
 # safetensors 변환본 (1.2GB) — convert_to_safetensors.py로 재생성 가능
-models/
+# **루트 전용(/)으로 묶어야 한다**: 앞의 `models/`는 하위 경로의 같은 이름 디렉터리까지
+# 전부 먹어서 src/models/ 아래 **새로 만든 파일이 조용히 커밋에서 빠졌다**
+# (src/models/third_party/efficientface.py — 서버에서 ModuleNotFoundError로 드러났다).
+/models/
 
 # 문서 PDF는 md에서 재생성한다(scripts/build_docs_pdf.py) — 통합기록만 6.7MB라
 # 갱신할 때마다 커밋하면 저장소가 금방 무거워진다. md와 assets/만 추적한다.

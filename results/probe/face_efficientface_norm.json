@@ -1,0 +1,23 @@
+{
+  "modality": "face",
+  "n_train": 8000,
+  "n_val": 11443,
+  "majority": 27.0,
+  "results": {
+    "efficientface_224": {
+      "val_acc": 21.29,
+      "dim": 1024,
+      "minutes": 3.8
+    },
+    "efficientface_112": {
+      "val_acc": 19.69,
+      "dim": 1024,
+      "minutes": 3.6
+    },
+    "mobilefacenet": {
+      "val_acc": 28.7,
+      "dim": 512,
+      "minutes": 2.4
+    }
+  }
+}

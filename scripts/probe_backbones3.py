@@ -50,6 +50,7 @@ CANDS = {
     },
     "face": {
         "mobilefacenet": "emotiefflib mbf_va_mtl (현재 쓰는 것)",
+        "poster2": "POSTER++ AffectNet-7cls 67.49% (IR-50 + MobileFaceNet 랜드마크 + ViT)",
         "vit_fer": "trpakov/vit-face-expression (ViT, 표정 미세조정)",
         "beit_fer": "Tanneru/...BEIT-Large (FER+RAF-DB+AffectNet)",
     },
@@ -63,6 +64,9 @@ HF = {
     "beit_fer": "Tanneru/Facial-Emotion-Detection-FER-RAFDB-AffectNet-BEIT-Large",
 }
 SR = 16000
+# POSTER++ 저장소·체크포인트 (서버에 받아둔 경로)
+POSTER_DIR = "/data/work/poster2/POSTER_V2"
+POSTER_CKPT = "/data/work/poster2/affectnet7_best.pth"
 
 
 def pick(df: pd.DataFrame, n: int, seed: int = 0) -> pd.DataFrame:
@@ -153,7 +157,25 @@ def feats_face(name, df, dev, bs=64, per_utt=8):
             paths.append(q); owner.append(k)
     owner = _np.array(owner)
 
-    if name == "mobilefacenet":
+    if name == "poster2":
+        # POSTER++ (Talented-Q/POSTER_V2, MIT). 분류기 머리(768->7)를 Identity로 바꿔
+        # 그 직전 768차원 특징을 쓴다. 입력은 224x224, ImageNet 정규화.
+        import sys as _s
+        _s.path.insert(0, POSTER_DIR)
+        from models.PosterV2_7cls import pyramid_trans_expr2
+        m = pyramid_trans_expr2(img_size=224, num_classes=7)
+        ck = torch.load(POSTER_CKPT, map_location="cpu", weights_only=False)
+        sd = ck.get("state_dict", ck)
+        sd = {k[7:] if k.startswith("module.") else k: v for k, v in sd.items()}
+        missing, unexpected = m.load_state_dict(sd, strict=False)
+        print(f"  [poster2] 적재 — 빠진 키 {len(missing)} · 남는 키 {len(unexpected)}", flush=True)
+        m.VIT.head = torch.nn.Identity()
+        m = m.to(dev).eval()
+        size = 224
+        mean = _np.array([0.485, 0.456, 0.406], dtype=_np.float32).reshape(3, 1, 1)
+        std = _np.array([0.229, 0.224, 0.225], dtype=_np.float32).reshape(3, 1, 1)
+        fwd = lambda x: m(x)
+    elif name == "mobilefacenet":
         from emotiefflib.facial_analysis import EmotiEffLibRecognizerTorch
         m = EmotiEffLibRecognizerTorch(model_name="mbf_va_mtl", device="cpu").model.to(dev).eval()
         size, mean, std = 112, 0.5, 0.5
@@ -164,7 +186,8 @@ def feats_face(name, df, dev, bs=64, per_utt=8):
         proc = AutoImageProcessor.from_pretrained(hf)
         m = AutoModel.from_pretrained(hf).to(dev).eval()
         size = proc.size.get("height", 224) if isinstance(proc.size, dict) else 224
-        mean, std = float(_np.mean(proc.image_mean)), float(_np.mean(proc.image_std))
+        mean = _np.array(proc.image_mean, dtype=_np.float32).reshape(3, 1, 1)
+        std = _np.array(proc.image_std, dtype=_np.float32).reshape(3, 1, 1)
         fwd = lambda x: m(pixel_values=x).last_hidden_state.mean(1)
 
     vecs = []
@@ -172,7 +195,8 @@ def feats_face(name, df, dev, bs=64, per_utt=8):
         arr = []
         for q in paths[i:i + bs]:
             a = _np.asarray(Image.open(q).convert("RGB").resize((size, size)), dtype=_np.float32) / 255.0
-            arr.append(((a - mean) / std).transpose(2, 0, 1))
+            a = a.transpose(2, 0, 1)
+            arr.append((a - mean) / std)
         with torch.no_grad():
             v = fwd(torch.from_numpy(_np.stack(arr)).to(dev))
         vecs.append(v.float().cpu().numpy())

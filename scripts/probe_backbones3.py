@@ -50,6 +50,8 @@ CANDS = {
     },
     "face": {
         "mobilefacenet": "emotiefflib mbf_va_mtl (현재 쓰는 것)",
+        "efficientface_224": "EfficientFace AffectNet-7 · 112 크롭을 224로 업샘플(사전학습 해상도)",
+        "efficientface_112": "EfficientFace AffectNet-7 · 112 그대로(사분면 분할 일반화)",
         "poster2": "POSTER++ AffectNet-7cls 67.49% (IR-50 + MobileFaceNet 랜드마크 + ViT)",
         "vit_fer": "trpakov/vit-face-expression (ViT, 표정 미세조정)",
         "beit_fer": "Tanneru/...BEIT-Large (FER+RAF-DB+AffectNet)",
@@ -190,6 +192,18 @@ def feats_face(name, df, dev, bs=64, per_utt=8):
         size = 224
         mean = _np.array([0.485, 0.456, 0.406], dtype=_np.float32).reshape(3, 1, 1)
         std = _np.array([0.229, 0.224, 0.225], dtype=_np.float32).reshape(3, 1, 1)
+        fwd = lambda x: m(x)
+    elif name.startswith("efficientface"):
+        # v20 후보. 112 크롭을 그대로 주고, 업샘플(224)은 백본 안에서 학습 때와 **같은 경로**로
+        # 하게 둔다. proj(1024->256)는 무작위 초기화라 쓰면 안 되므로 Identity로 바꿔
+        # conv5 뒤 공간평균 1024차원을 특징으로 쓴다. 정규화는 원 저장소와 같이 없음(0~1).
+        from src.models.visual_backbone import EfficientFaceFrameCNN
+        in_size = 112 if name.endswith("112") else 224
+        m = EfficientFaceFrameCNN(feat_dim=256, dropout=0.0, freeze_layers=9,
+                                  weights="/data/work/efficientface/EfficientFace_AffectNet7.pth.tar",
+                                  input_size=in_size).to(dev).eval()
+        m.proj = torch.nn.Identity()
+        size, mean, std = 112, 0.0, 1.0
         fwd = lambda x: m(x)
     elif name == "mobilefacenet":
         from emotiefflib.facial_analysis import EmotiEffLibRecognizerTorch

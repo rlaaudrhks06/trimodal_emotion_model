@@ -116,20 +116,28 @@ def feats_audio(name, df, dev, bs=16, max_sec=8.0):
 
 
 def feats_text(name, df, dev, bs=64):
-    from transformers import AutoConfig, AutoModel, AutoTokenizer
+    import json as _json, shutil as _sh, tempfile as _tf, os as _os
+    from huggingface_hub import snapshot_download
+    from transformers import AutoModel, AutoTokenizer
     hf = HF[name]
-    tok = AutoTokenizer.from_pretrained(hf)
-    # 미세조정 모델의 config.json에 적힌 라벨 이름표(id2label)가 transformers 5.x 검증을
-    # 통과 못 하는 경우가 있다(dlckdfuf141/korean-emotion-kluebert-v2). 우리는 분류기 머리를
-    # 버리고 백본만 쓰므로 그 필드를 비우고 불러온다 — 가중치·구조와는 무관한 형식 문제다.
-    cfg = AutoConfig.from_pretrained(hf)
-    for f in ("id2label", "label2id"):
-        try:
-            object.__setattr__(cfg, f, None)
-        except Exception:
-            try: setattr(cfg, f, None)
-            except Exception: pass
-    m = AutoModel.from_pretrained(hf, config=cfg).to(dev).eval()
+    # 일부 미세조정 모델의 config.json에 적힌 라벨 이름표(id2label)가 transformers 5.x
+    # 검증을 통과 못 한다(dlckdfuf141/korean-emotion-kluebert-v2). 오류가 AutoConfig 안에서
+    # 나므로 객체를 고칠 수 없다 — 저장소를 내려받아 config.json에서 그 필드를 지우고 쓴다.
+    # 우리는 분류기 머리를 버리고 백본만 쓰므로 라벨 이름표는 필요 없다.
+    local = snapshot_download(hf)
+    work = _tf.mkdtemp(prefix="probe_txt_")
+    for f in _os.listdir(local):
+        src = _os.path.join(local, f)
+        if _os.path.isfile(src):
+            _sh.copy(src, work)
+    cj = _os.path.join(work, "config.json")
+    if _os.path.exists(cj):
+        d = _json.load(open(cj, encoding="utf-8"))
+        for k in ("id2label", "label2id"):
+            d.pop(k, None)
+        _json.dump(d, open(cj, "w", encoding="utf-8"), ensure_ascii=False)
+    tok = AutoTokenizer.from_pretrained(work)
+    m = AutoModel.from_pretrained(work).to(dev).eval()
     out = []
     texts = df["text"].astype(str).tolist()
     for i in range(0, len(texts), bs):

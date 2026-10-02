@@ -1,0 +1,126 @@
+# v20 — v11e + ① 시각 백본 EfficientFace(AffectNet-7) ② softhard 모달리티 드롭아웃 (13.20절).
+# 출처: katerynaCh/multimodal-emotion-recognition (ICPR 2022, MIT). 그 저장소에서 가져온 것은
+# 구조 두 개뿐이고, 저장소의 RAVDESS 79~81%는 우리 과제와 비교 불가다(연출 발화·문장 2종·배우 24명).
+#
+# v11e와 다른 설정은 아래 네 줄뿐이다(model.visual_backbone, model.efficientface_input_size,
+# train.softhard_dropout, batch_size) + 체크포인트 경로. epochs는 v11e와 같은 15로 둔다 —
+# 비교 대상이 v11e(5시드 46.18 ± 0.70)이므로 에폭을 건드리면 변수가 둘이 된다.
+#
+# ① EfficientFace: 얼굴 사전학습 백본을 MobileFaceNet에서 교체. AffectNet-7(표정 7종)으로
+#    학습된 가중치라 감정 특징을 직접 담고 있다. **입력 224**로 올려 넣는다(원 저장소도
+#    sample_size=224, 사전학습도 224). 112로 쓰려면 efficientface_input_size: 112 로 바꾼다.
+#
+# ② softhard 드롭아웃: 배치를 4벌로 복제해 [원본][오디오0][영상0][텍스트0]을 **매 배치**가
+#    전부 본다. 기존 25% 확률 드롭(modality_dropout_prob)은 train.py가 자동으로 0으로 끈다 —
+#    둘을 같이 켜면 결손이 중복된다.
+#
+# **batch_size를 128 -> 32로 낮춘 이유**: 4벌 복제 후 모델이 한 스텝에 보는 샘플이 32x4=128로
+#    v11e와 똑같아진다(메모리도 v11e와 동일). 128로 두면 실효 512라 OOM이다.
+#    대신 에폭당 스텝이 4배이므로 **에폭 시간도 약 4배**(v11e 약 20분 -> 약 80분, 15에폭 ≈ 20시간).
+#    이 비용은 배치 복제 방식 자체에서 나오는 것이고 줄일 방법은 벌 수를 줄이는 것뿐이다.
+
+model:
+  d_model: 256
+  n_heads: 8
+  ffn_dim: 1024
+  backbone_layers: 2
+  num_classes: 7
+  prosody_dim: 10
+  cross_attn_dropout: 0.2
+  cross_attn_drop_path: 0.1
+  backbone_dropout: 0.2
+  visual_cnn_dropout: 0.15
+  classifier_dropout: 0.35
+  text_dropout: 0.2
+  text_freeze_layers: 12
+  visual_freeze_layers: 9
+  visual_backbone: "efficientface"   # ← v11e와 다른 점 ①
+  efficientface_input_size: 224      # 사전학습 해상도. 112 크롭을 bilinear 업샘플한다.
+
+text:
+  pretrained_model: "klue/bert-base"
+
+audio:
+  backbone: "wav2vec2"        # ← v10과 다른 유일한 모델 설정
+  # HF 원본이 아니라 로컬 변환본. transformers 최신 버전이 CVE-2025-32434 때문에
+  # torch<2.6에서 .bin 로딩을 거부하는데 facebook/wav2vec2-*는 safetensors가 없다.
+  # 서버 torch는 2.5.1+cu121이고 올리면 학습 환경이 위험해지므로 가중치만 변환해 쓴다.
+  #   python scripts/convert_to_safetensors.py \
+  #       --repo facebook/wav2vec2-large-xlsr-53 --out models/wav2vec2-large-xlsr-53
+  pretrained_model: "models/wav2vec2-large-xlsr-53"
+  # 12를 고른 근거는 "SER은 마지막 층보다 중간 층이 낫다"는 일반론이었다(8.18.2절).
+  # **이 전제는 이후 우리 데이터에서 반증됐다**(8.24절): val 전체 11,443개로 층별 프로빙을
+  # 해보니 24층(+8.39%p)과 0층(+7.54%p)이 높고 12층(+5.70%p)이 최하위인 U자형이었다.
+  # 이 값은 v11 실행 기록이므로 그대로 두고, 새 실험은 configs/config_v12a_layer24.yaml을 쓴다.
+  w2v_layer: 12
+  # 13.13절: 꺼내는 층(12) 바로 아래 4개(9~12층)만 학습. 0이면 v11d와 동일(전부 동결).
+  w2v_finetune_layers: 4
+  w2v_freeze: true            # v7 교훈 — 이 데이터 규모에서 대형 사전학습 모델 파인튜닝은 과적합
+  sample_rate: 16000
+  n_mels: 80                  # wav2vec2 경로에선 안 쓰이지만 스키마 유지를 위해 남김
+  n_fft: 400
+  hop_length: 160
+
+visual:
+  face_size: 112
+
+train:
+  # v10과 동일하게 128을 유지한다. 처음엔 메모리를 걱정해 64로 낮췄는데, 그러면
+  # 에폭당 옵티마이저 스텝이 443 -> 886으로 2배가 되어 "wav2vec2 효과"와 "배치 크기 효과"가
+  # 섞인다. 실측 추정상 A100 80GB에 여유가 충분하므로(어텐션이 층당 약 0.6GB, 동결이라
+  # 활성값도 안 쌓임) 변수를 하나만 바꾸는 쪽을 택했다.
+  batch_size: 32    # 4벌 복제 후 실효 128 = v11e와 동일
+  epochs: 15   # 모든 run이 12에폭 안에 정점(v11 9·v11a 12·v11d 4~12). 캐시 없이 40은 낭비다
+  lr: 0.0002
+  weight_decay: 0.05
+  modality_dropout_prob: 0.25   # softhard_dropout이 켜지면 train.py가 0으로 덮어쓴다
+  softhard_dropout: true        # ← v11e와 다른 점 ②
+  label_smoothing: 0.1
+  lr_scheduler_patience: 3
+  lr_scheduler_factor: 0.5
+  num_workers: 8
+  feature_cache_dir: "data/feature_cache"
+
+  # 화자 독립 분할 (8.14/8.17절). 재현 명령:
+  #   python scripts/split_manifest.py --manifest data/manifests/all.csv \
+  #       --out-dir data/manifests_si --unit speaker --seed 2026 --verify
+  train_manifest: "data/manifests_ext/train_si_plus263.csv"
+  val_manifest: "data/manifests_si/val.csv"
+  test_manifest: "data/manifests_si/test.csv"
+  prosody_stats_path: "data/prosody_stats_train_si.json"
+
+  checkpoint_dir: "checkpoints_v20"
+  periodic_checkpoint_dir: "checkpoints_periodic_v20"
+  # 20으로 둔 이유: 파라미터가 4.37억으로 늘어 체크포인트 1개가 1.63GB다(v10은 0.45GB).
+  # 5에폭 간격이면 40에폭에 스냅샷만 13GB이고, 그중 10.6GB는 매번 똑같이 저장되는
+  # 동결 wav2vec2 가중치다. 스냅샷의 원래 용도였던 SWA는 두 차례 시도 끝에 효과 없음으로
+  # 결론났고(8.15.3절) 그 외 용도는 v6에서 한 번 썼을 뿐이라, 간격을 넓혀 낭비를 줄인다.
+  checkpoint_interval: 20
+
+  # ── v11과 다른 유일한 설정 (13.5절) ──────────────────────────────────
+  # 발화마다 매 에폭 {깨끗, 20, 10, 5dB} 중 하나를 뽑는다. 25%가 깨끗하게 남으므로
+  # 깨끗한 성능을 버리지 않으면서 소음 조건을 같이 배운다.
+  #
+  # SNR 값의 근거: v11 실측이 SNR 20dB 43.80% / 10dB 36.85%(깨끗 46.19%)이고,
+  # 일반 가정의 음성 환경이 그 구간이다. 5dB는 그보다 나쁜 쪽 여유로 넣는다.
+  # (results/eval/v11_noise*.json — (발화, SNR) 시드, 서버 CUDA에서 잰 값.)
+  #
+  # **val에는 안 들어간다** — train.py가 train_ds에만 넘긴다. 체크포인트 선택이
+  # val_accuracy 기준이라 val을 오염시키면 선택 기준이 v11과 달라져 비교가 깨진다.
+  noise_aug_snrs: [20, 10, 5]
+
+  # scripts/precompute_noisy_prosody.py --snr 20 10 5 --workers 16 로 미리 만든다.
+  # 없으면 데이터셋이 __init__에서 죽는다(조용히 깨끗한 운율로 흘러가지 않게).
+  noisy_prosody_dir: "data/noisy_prosody_plus263"
+
+
+  # ── v11a와 다른 것 (13.12절) ─────────────────────────────────────────────
+  # train에 AI Hub 263(대화 음성, 5명 다수결 3/5+, 36,665발화, 영상 없음)을 더했다.
+  # val·test·prosody 통계·wav2vec2 캐시 디렉터리는 v11a 그대로. 소음 운율만 결합본을 쓴다.
+  # 영상 없는 발화는 데이터셋이 검은 프레임 1장을 준다(tests/test_no_video.py).
+
+  # ── v11d와 다른 것 (13.13절) ─────────────────────────────────────────────
+  # wav2vec2 9~12층(50.4M)을 lr 2e-5로 같이 학습한다. 캐시는 동결 출력이라 쓸 수 없다
+  # (train.py가 막는다) — 파형 경로라 에폭당 ~20분, 15에폭 ≈ 5시간. w2v는 eval 모드
+  # 유지(LayerDrop·드롭아웃 없음): 변수를 가중치 하나로 둔다.
+  w2v_lr: 2.0e-5

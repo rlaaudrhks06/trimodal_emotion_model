@@ -33,6 +33,10 @@ class ModelConfig:
     # 영상 백본(13.18절). "mobilefacenet"(기본, 동결 사전학습) · "scratch"(처음부터 학습하는 소형 CNN).
     # scratch는 8.8절에서 person bbox를 얼굴이라 부르던 시절의 비교를 고친 입력으로 다시 재려고 되살린 것.
     visual_backbone: str = "mobilefacenet"
+    # EfficientFace(AffectNet-7) 가중치 경로. visual_backbone="efficientface"일 때만 쓴다.
+    efficientface_weights: str = "/data/work/efficientface/EfficientFace_AffectNet7.pth.tar"
+    # 224=사전학습 해상도로 업샘플(기본) · 112=사분면 분할을 일반화해 우리 크롭 그대로
+    efficientface_input_size: int = 224
     # 계층적 융합에서 **1단계에 들어가는 두 모달리티**(11.3.2 항목 1).
     # "audio_text"(기본)가 v1~v12b 전체가 쓴 순서라 값을 안 주면 동작이 완전히 같다.
     # 고를 수 있는 값과 실험 의도는 src/fusion/hierarchical_fusion.py 참고.

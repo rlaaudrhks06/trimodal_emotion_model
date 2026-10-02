@@ -44,7 +44,8 @@ class TrimodalEmotionModel(nn.Module):
         self.visual_backbone = VisualBackbone(
             d_model=m.d_model, n_heads=m.n_heads, ffn_dim=m.ffn_dim, n_layers=m.backbone_layers,
             dropout=m.backbone_dropout, cnn_dropout=m.visual_cnn_dropout, cnn_freeze_layers=m.visual_freeze_layers,
-            backbone_type=m.visual_backbone,
+            backbone_type=m.visual_backbone, efficientface_weights=m.efficientface_weights,
+            efficientface_input_size=m.efficientface_input_size,
         )
         self.text_backbone = TextBackbone(
             pretrained_model=cfg.text_pretrained, d_model=m.d_model,

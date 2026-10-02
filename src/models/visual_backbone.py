@@ -22,6 +22,8 @@ TemporalConvFrontend에 통과시켜 X_v 시퀀스를 만든다.
 """
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from .third_party.efficientface import LocalFeatureExtractor as _EFLocal
 from emotiefflib.facial_analysis import EmotiEffLibRecognizerTorch
 
 from .common import TemporalConvFrontend
@@ -31,6 +33,103 @@ from .common import TemporalConvFrontend
 MBF_MEAN = (0.5, 0.5, 0.5)
 MBF_STD = (0.5, 0.5, 0.5)
 MBF_NATIVE_DIM = 512  # mbf_va_mtl 백본이 내는 임베딩 차원
+
+
+class _DynamicLocalFeatureExtractor(_EFLocal):
+    """원본 LocalFeatureExtractor의 사분면 분할을 입력 크기에 맞춰 일반화한 것.
+
+    원본은 `x[:, :, 0:28, 0:28]`처럼 56x56 특징맵(=224 입력)을 전제로 좌표가 박혀 있다.
+    112 입력이면 특징맵이 28x28이라 두 번째 패치가 빈 텐서가 되어 conv가 죽는다.
+    파라미터(모두 depthwise conv)는 해상도와 무관하므로 사전학습 가중치를 그대로 쓴다.
+    concat 순서는 원본과 동일(세로로 11|21, 12|22를 붙이고 둘을 가로로 붙임).
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h, w = x.shape[2] // 2, x.shape[3] // 2
+        patches = [x[:, :, :h, :w], x[:, :, h:, :w], x[:, :, :h, w:], x[:, :, h:, w:]]
+        outs = []
+        for i, patch in enumerate(patches, start=1):
+            y = self.relu(getattr(self, f"bn{i}_1")(getattr(self, f"conv{i}_1")(patch)))
+            outs.append(self.relu(getattr(self, f"bn{i}_2")(getattr(self, f"conv{i}_2")(y))))
+        return torch.cat([torch.cat(outs[:2], dim=2), torch.cat(outs[2:], dim=2)], dim=3)
+
+
+class EfficientFaceFrameCNN(nn.Module):
+    """EfficientFace(AffectNet-7 사전학습)의 **공간 부분만** 써서 프레임 하나 -> 임베딩 (13.20절).
+
+    원본(zengqunzhao/EfficientFace, MIT)은 conv5까지가 공간 특징이고 그 뒤는 분류기다.
+    우리는 시간축을 교차 어텐션이 처리하므로 공간 특징만 가져와 평균 풀링 후 proj한다.
+    **입력 해상도 주의**: 이 체크포인트는 AffectNet 224x224로 사전학습됐고, 원 저장소
+    (katerynaCh)도 sample_size=224로 파인튜닝한다. 게다가 LocalFeatureExtractor.forward는
+    56x56 특징맵을 전제로 `x[:, :, 28:56, ...]` 슬라이스가 **하드코딩**돼 있어서, 우리 112
+    크롭을 그대로 넣으면 특징맵이 28x28이 되어 그 패치가 빈 텐서가 되고 크래시한다.
+    그래서 input_size로 둘 중 하나를 고른다:
+      · 224(기본) — 112 크롭을 bilinear 업샘플. 사전학습 해상도와 일치. 연산·메모리는 4배.
+      · 112      — 사분면 분할을 H//2로 일반화(_DynamicLocalFeatureExtractor). 비용은 v11e와
+                   같지만 동결 백본이 절반 스케일 얼굴을 보게 된다.
+    어느 쪽이 나은지는 측정 문제다(POSTER++는 업샘플 쪽에서 프로브에 졌다).
+    """
+
+    def __init__(self, feat_dim: int = 256, dropout: float = 0.0, freeze_layers: int = 9,
+                 weights: str | None = None, input_size: int = 224):
+        super().__init__()
+        self.input_size = input_size
+        from .third_party.efficientface import InvertedResidual
+        from .third_party.modulator import Modulator
+        repeats, chans = [4, 8, 4], [29, 116, 232, 464, 1024]
+        self.conv1 = nn.Sequential(nn.Conv2d(3, chans[0], 3, 2, 1, bias=False),
+                                   nn.BatchNorm2d(chans[0]), nn.ReLU(inplace=True))
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        ic = chans[0]
+        for name, rep, oc in zip(["stage2", "stage3", "stage4"], repeats, chans[1:]):
+            seq = [InvertedResidual(ic, oc, 2)] + [InvertedResidual(oc, oc, 1) for _ in range(rep - 1)]
+            setattr(self, name, nn.Sequential(*seq))
+            ic = oc
+        self.local = (_EFLocal(29, 116, 1) if input_size == 224
+                      else _DynamicLocalFeatureExtractor(29, 116, 1))
+        self.modulator = Modulator(116)
+        self.conv5 = nn.Sequential(nn.Conv2d(ic, chans[-1], 1, 1, 0, bias=False),
+                                   nn.BatchNorm2d(chans[-1]), nn.ReLU(inplace=True))
+        if weights:
+            ck = torch.load(weights, map_location="cpu", weights_only=False)
+            sd = ck.get("state_dict", ck)
+            sd = {k[7:] if k.startswith("module.") else k: v for k, v in sd.items()}
+            missing, unexpected = self.load_state_dict(sd, strict=False)
+            # fc(분류기)는 안 쓰므로 unexpected에 남는 게 정상이다. missing이 있으면 구조가 다른 것.
+            if missing:
+                raise ValueError(f"EfficientFace 가중치에 없는 키 {len(missing)}개: {missing[:5]}")
+            print(f"[EfficientFace] 적재 — 쓰지 않는 키 {len(unexpected)}개(분류기)", flush=True)
+
+        self.freeze_backbone = freeze_layers > 0
+        if self.freeze_backbone:
+            for p in self.parameters():
+                p.requires_grad = False
+        self.dropout = nn.Dropout(dropout)
+        self.proj = nn.Linear(chans[-1], feat_dim)
+        self.feat_dim = feat_dim
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.freeze_backbone:
+            for m in (self.conv1, self.stage2, self.stage3, self.stage4, self.local, self.modulator, self.conv5):
+                m.eval()
+        return self
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 원본 EfficientFace.forward_features와 같은 경로. 입력은 0~1 픽셀
+        # (원 저장소도 ToTensor(norm_value=255)로 0~1을 그대로 넣는다 — mean/std 정규화 없음).
+        if x.shape[-1] != self.input_size:
+            x = F.interpolate(x, size=(self.input_size, self.input_size),
+                              mode="bilinear", align_corners=False)
+        x = self.conv1(x)
+        x = self.maxpool(x)
+        x1 = self.modulator(self.stage2(x))
+        x2 = self.local(x)
+        x = x1 + x2
+        x = self.stage4(self.stage3(x))
+        x = self.conv5(x)
+        h = x.mean([2, 3])                 # 공간 평균 -> [N, 1024]
+        return self.proj(self.dropout(h))
 
 
 class ScratchFrameCNN(nn.Module):
@@ -112,15 +211,22 @@ class VisualBackbone(nn.Module):
     def __init__(
         self, d_model: int, n_heads: int, ffn_dim: int, n_layers: int, frame_feat_dim: int = 256,
         dropout: float = 0.1, cnn_dropout: float = 0.0, cnn_freeze_layers: int = 9,
-        backbone_type: str = "mobilefacenet",
+        backbone_type: str = "mobilefacenet", efficientface_weights: str | None = None,
+        efficientface_input_size: int = 224,
     ):
         super().__init__()
-        if backbone_type not in ("mobilefacenet", "scratch"):
-            raise ValueError(f"model.visual_backbone는 'mobilefacenet'·'scratch' 중 하나여야 한다, got {backbone_type!r}")
+        if backbone_type not in ("mobilefacenet", "scratch", "efficientface"):
+            raise ValueError("model.visual_backbone는 'mobilefacenet'·'scratch'·'efficientface' 중 "
+                             f"하나여야 한다, got {backbone_type!r}")
         self.backbone_type = backbone_type
-        self.frame_cnn = (ScratchFrameCNN(feat_dim=frame_feat_dim, dropout=cnn_dropout)
-                          if backbone_type == "scratch"
-                          else FrameCNN(feat_dim=frame_feat_dim, dropout=cnn_dropout, freeze_layers=cnn_freeze_layers))
+        if backbone_type == "scratch":
+            self.frame_cnn = ScratchFrameCNN(feat_dim=frame_feat_dim, dropout=cnn_dropout)
+        elif backbone_type == "efficientface":
+            self.frame_cnn = EfficientFaceFrameCNN(feat_dim=frame_feat_dim, dropout=cnn_dropout,
+                                                   freeze_layers=cnn_freeze_layers, weights=efficientface_weights,
+                                                   input_size=efficientface_input_size)
+        else:
+            self.frame_cnn = FrameCNN(feat_dim=frame_feat_dim, dropout=cnn_dropout, freeze_layers=cnn_freeze_layers)
         self.frontend = TemporalConvFrontend(
             in_dim=frame_feat_dim, d_model=d_model, n_heads=n_heads, ffn_dim=ffn_dim, n_layers=n_layers, dropout=dropout
         )

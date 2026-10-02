@@ -106,9 +106,59 @@ def aux_loss(aux_logits: dict, batch: dict, loss_fn) -> torch.Tensor | None:
     return torch.stack(terms).sum() if terms else None
 
 
+
+def softhard_expand(batch: dict) -> dict:
+    """모달리티 결손을 배치 복제로 학습한다 (13.20절, ICPR'22 katerynaCh 저장소의 softhard 변형).
+
+    기존 방식은 "샘플마다 25% 확률로 모달리티 하나를 끈다"라서, 한 배치가 어떤 결손 상황을
+    보는지가 운에 달려 있다. 이 방식은 배치를 4벌로 복제해 **매 배치가 네 상황을 전부** 본다:
+
+        [원본] [오디오 없음] [영상 없음] [텍스트 없음]
+
+    원본(katerynaCh train.py)과 다른 점 두 가지를 분명히 적어둔다:
+
+    · 원본은 2모달(음성·영상)이라 4벌이 [원본][soft: 음성*c·영상*(1-c)][음성0][영상0]이다.
+      우리는 3모달이라 soft 벌 자리에 텍스트 결손을 넣었다. soft 계수를 쓰려면 벌이 5개가 되고
+      배치 복제 비용이 25% 더 는다. 또 우리 파형은 wav2vec2가 발화별 zero-mean/unit-variance
+      정규화를 하므로 **파형에 계수를 곱하면 아무 효과가 없다** — 운율·프레임엔 효과가 있으니
+      "soft는 전혀 무의미"한 건 아니고, 음성 쪽만 반쪽이 된다. 필요하면 벌을 늘려 따로 검증한다.
+    · 원본은 복제 후 배치를 섞는다(torch.randperm). 우리는 섞지 않는다 — 손실이 4B개 전체의
+      평균이고, 배치 순서에 의존하는 BatchNorm은 시각 CNN이 동결(eval)이라 없기 때문이다.
+
+    지우는 방식은 model._maybe_drop_modalities와 같다(오디오는 멜·운율·파형을 전부 0으로,
+    텍스트는 attention_mask를 0으로 두되 첫 토큰만 남긴다). 이 함수를 쓸 때는 모델 내부
+    드롭아웃을 반드시 꺼야 한다 — 둘 다 켜면 결손이 중복으로 걸린다.
+    """
+    def rep(v, n=4):
+        if torch.is_tensor(v):
+            return torch.cat([v] * n, dim=0)
+        if isinstance(v, list):
+            return v * n
+        return v
+
+    if "audio_feat" in batch:
+        # 캐시 경로에서 멜·파형만 0으로 만들면 오디오 결손이 **조용히 무효**가 된다
+        # (모델이 audio_feat을 읽으므로). 파인튜닝 run은 캐시가 금지지만 함정을 막아둔다.
+        raise ValueError("softhard_dropout은 wav2vec2 특징 캐시(audio_feat)와 함께 쓸 수 없다")
+
+    out = {k: rep(v) for k, v in batch.items()}
+    b = batch["mel_spec"].size(0)
+    sl = lambda i: slice(i * b, (i + 1) * b)      # 1=오디오없음, 2=영상없음, 3=텍스트없음
+
+    for key in ("mel_spec", "prosody_vec"):
+        out[key][sl(1)].zero_()
+    for key in ("waveform",):
+        if key in out and torch.is_tensor(out[key]):
+            out[key][sl(1)].zero_()
+    out["frames"][sl(2)].zero_()
+    out["attention_mask"][sl(3)].zero_()
+    out["attention_mask"][sl(3), 0] = 1           # BERT류는 유효 토큰이 최소 1개 필요
+    return out
+
+
 def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "",
               aux_loss_fn=None, aux_weight: float = 0.0,
-              coarse_loss_fn=None, coarse_weight: float = 0.0) -> dict:
+              coarse_loss_fn=None, coarse_weight: float = 0.0, softhard: bool = False) -> dict:
     """aux_loss_fn과 aux_weight를 주면 v12 보조 손실을 함께 학습한다.
     coarse_loss_fn과 coarse_weight를 주면 v11g 3클래스 머리 손실을 함께 학습한다(13.14절).
 
@@ -136,6 +186,8 @@ def run_epoch(model, loader, device, loss_fn, optimizer=None, log_label: str = "
 
     with torch.set_grad_enabled(is_train):
         for batch_idx, batch in enumerate(loader, 1):
+            if is_train and softhard:
+                batch = softhard_expand(batch)
             batch = move_batch_to_device(batch, device)
             model_inputs = dict(
                 mel_spec=batch["mel_spec"],
@@ -296,7 +348,12 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=train_cfg["batch_size"], shuffle=True, collate_fn=collate_fn, **loader_kwargs)
     val_loader = DataLoader(val_ds, batch_size=train_cfg["batch_size"], shuffle=False, collate_fn=collate_fn, **loader_kwargs)
 
-    model = TrimodalEmotionModel(cfg, modality_dropout_prob=train_cfg["modality_dropout_prob"]).to(device)
+    # softhard를 켜면 모델 내부 드롭아웃은 0으로 둔다 — 둘 다 켜면 결손이 중복으로 걸린다.
+    _mdp = 0.0 if bool(train_cfg.get("softhard_dropout", False)) else train_cfg["modality_dropout_prob"]
+    if bool(train_cfg.get("softhard_dropout", False)):
+        print(f"[train] softhard 모달리티 드롭아웃 — 배치를 4벌(원본·오디오없음·영상없음·텍스트없음)로 "
+              f"복제한다. 모델 내부 드롭아웃은 {train_cfg['modality_dropout_prob']} -> 0", flush=True)
+    model = TrimodalEmotionModel(cfg, modality_dropout_prob=_mdp).to(device)
     # v11d_audio263(13.15절): 오디오 갈래를 263 단독 사전학습 가중치로 시작한다. 없으면 이전과 동일(사전학습 값).
     init_audio_from = args.init_audio_from or train_cfg.get("init_audio_from")
     init_audio_info = {}
@@ -359,6 +416,8 @@ def main():
     # v11g 3클래스 머리(13.14절). coarse_loss_weight가 0(기본)이면 경로를 타지 않는다.
     # 중립 가중치: 3클래스에서 중립 재현율이 15~20%로 가장 큰 구멍이라 중립을 놓칠 때 벌점을 더 준다.
     # ponytail: 가중치 값(0.5·2.0)은 실측 근거 없는 첫 추정 — v11g 결과 보고 조정한다.
+    # 13.20절: 모달리티 결손을 배치 복제로 학습한다. 켜면 모델 내부 드롭아웃은 꺼야 한다.
+    softhard = bool(train_cfg.get("softhard_dropout", False))
     coarse_weight = float(train_cfg.get("coarse_loss_weight", 0.0))
     coarse_loss_fn = None
     if coarse_weight > 0:
@@ -423,6 +482,8 @@ def main():
         "noise_aug_clean_ratio": train_cfg.get("noise_aug_clean_ratio"),
         "w2v_finetune_layers": cfg.audio_w2v_finetune_layers,
         "coarse_head": model.use_coarse,
+        "softhard_dropout": softhard,
+        "visual_backbone": cfg.model.visual_backbone,
         **init_audio_info,
         "coarse_loss_weight": coarse_weight,
         "coarse_neutral_weight": train_cfg.get("coarse_neutral_weight") if coarse_weight > 0 else None,
@@ -446,7 +507,8 @@ def main():
         train_metrics = run_epoch(model, train_loader, device, train_loss_fn, optimizer,
                                   log_label=f"epoch {epoch:03d} train",
                                   aux_loss_fn=aux_loss_fn, aux_weight=aux_weight,
-                                  coarse_loss_fn=coarse_loss_fn, coarse_weight=coarse_weight)
+                                  coarse_loss_fn=coarse_loss_fn, coarse_weight=coarse_weight,
+                                  softhard=softhard)
         val_metrics = run_epoch(model, val_loader, device, eval_loss_fn, optimizer=None, log_label=f"epoch {epoch:03d} val")
 
         # param_groups[1]이 기존 모든 버전과 동일한 "메인" lr(크로스어텐션/분류기/프론트엔드) —

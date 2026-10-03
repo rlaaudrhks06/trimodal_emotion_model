@@ -74,7 +74,9 @@ train:
   label_smoothing: 0.1
   lr_scheduler_patience: 3
   lr_scheduler_factor: 0.5
-  num_workers: 8
+  # 224 재추출이 16코어를 쓰고 있어 데이터로더가 경쟁한다. 재추출(임계 경로)을
+  # 늦추지 않으려고 4로 낮춘다. 학습 결과에는 영향이 없고 속도만 달라진다.
+  num_workers: 4
   feature_cache_dir: "data/feature_cache"
 
   # 화자 독립 분할 (8.14/8.17절). 재현 명령:

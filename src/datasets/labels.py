@@ -17,7 +17,23 @@ KEMDy19/20은 원래 7클래스(경멸 없음)라서 이 병합 이후에는 AI 
 맞춰줘야 한다(scripts/build_manifest_aihub.py 참고).
 """
 
-EMOTION_LABELS = ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"]
+# 라벨 집합은 환경변수 EMOTION_LABEL_SET으로 고른다. 기본값은 지금까지와 똑같은 7클래스라
+# 기존 config·결과·스크립트는 한 줄도 영향받지 않는다.
+#
+# "4"를 주면 분노·행복·보통·슬픔만 쓴다 — emotion4 프로젝트(변유철 2024 논문과 조건을 맞춘
+# 4클래스 과제)의 기준선을 **환산이 아니라 직접 학습으로** 재기 위한 것이다. 7클래스 모델의
+# 확률을 4개만 더해 환산한 값(test 63.79 ± 0.71)은 4클래스로 학습한 모델과 다를 수 있다.
+# 놀람·공포·혐오·경멸은 매핑하지 않고 버린다(매니페스트 단계에서 이미 빠져 있다).
+import os as _os
+
+_LABEL_SETS = {
+    "7": ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"],
+    "4": ["angry", "happy", "neutral", "sad"],
+}
+_SET = _os.environ.get("EMOTION_LABEL_SET", "7")
+if _SET not in _LABEL_SETS:
+    raise ValueError(f"EMOTION_LABEL_SET은 {sorted(_LABEL_SETS)} 중 하나여야 한다, got {_SET!r}")
+EMOTION_LABELS = _LABEL_SETS[_SET]
 LABEL_TO_IDX = {label: idx for idx, label in enumerate(EMOTION_LABELS)}
 IDX_TO_LABEL = {idx: label for label, idx in LABEL_TO_IDX.items()}
 
